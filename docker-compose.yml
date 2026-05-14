@@ -1,0 +1,46 @@
+# aionui-cowork — local deployment stack.
+#
+# Phase 0 scope: control-plane only. SQLite-backed; auth is single-admin from
+# upstream AionUi. Multi-tenant + OIDC + per-session containers land in later
+# phases.
+#
+# Run:   docker compose up --build
+# Then:  open http://localhost:3000 — the admin password is printed to the
+#        control-plane logs on first start.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/4ekuct25/aionui-cowork-control-plane:dev
+    container_name: aionui-cowork-app
+    restart: unless-stopped
+    environment:
+      ALLOW_REMOTE: "true"
+      NODE_ENV: production
+      DATA_DIR: /data
+      # Image used for per-session sandboxes — will be consumed by
+      # DockerSessionManager in Phase 3.
+      SESSION_RUNTIME_IMAGE: ghcr.io/4ekuct25/aionui-cowork-runtime:dev
+    volumes:
+      # Mount the host Docker socket so the control-plane can orchestrate
+      # sibling session containers. Phase 8 will replace this with a
+      # docker-socket-proxy for least-privilege access.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - app-data:/data
+    ports:
+      - "3000:3000"
+
+  # Pre-pull / build the runtime image so DockerSessionManager finds it
+  # locally. Profile `build-only` runs this once and exits.
+  session-runtime-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.session-runtime
+    image: ghcr.io/4ekuct25/aionui-cowork-runtime:dev
+    profiles: ["build-only"]
+    command: ["true"]
+
+volumes:
+  app-data: {}

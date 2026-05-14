@@ -1,0 +1,54 @@
+# Session runtime image — per-chat-session sandbox where agents and workers run.
+# Contains only language runtimes + base utilities. Individual CLI agents
+# (claude-code, gemini-cli, codex, …) are installed lazily on first use into a
+# shared cache volume mounted by the control-plane.
+#
+# Image arch: built multi-arch (amd64 + arm64) via buildx.
+# Published as: ghcr.io/4ekuct25/aionui-cowork-runtime:<version>
+
+FROM node:20-bookworm-slim
+
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 \
+      python3-pip \
+      python3-venv \
+      git \
+      curl \
+      ca-certificates \
+      ripgrep \
+      jq \
+      tar \
+      gzip \
+      unzip \
+      tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Bun (used by some agents and for general JS scripting)
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.1.38" \
+    && ln -s /root/.bun/bin/bun /usr/local/bin/bun
+
+# Non-root user for session work
+RUN groupadd --gid 10001 aionui \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash aionui \
+    && mkdir -p /workspace /opt/aionui \
+    && chown -R aionui:aionui /workspace /opt/aionui /home/aionui
+
+# aionrs binary (cross-compiled in CI, copied per-arch).
+# CI will populate ./resources/aionrs-linux-<arch>/aionrs before docker build.
+# Phase 0 placeholder: directory may not exist yet — make COPY tolerant via
+# a no-op script. This will be replaced with the real binary in Phase 5.
+COPY resources/container-bootstrap/ /opt/aionui/bootstrap/
+RUN chmod +x /opt/aionui/bootstrap/entrypoint.sh \
+    && ln -s /opt/aionui/bootstrap/entrypoint.sh /usr/local/bin/aionui-entrypoint
+
+USER aionui
+WORKDIR /workspace
+
+# Run tini as PID 1 so signals propagate and zombies are reaped.
+ENTRYPOINT ["/usr/bin/tini", "--", "aionui-entrypoint"]
+
+# Default command: sleep forever — control-plane attaches via `docker exec`
+# to run individual agent processes and workers.
+CMD ["sleep", "infinity"]

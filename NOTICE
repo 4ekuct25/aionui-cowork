@@ -1,0 +1,16 @@
+aionui-cowork
+=============
+
+This product is a fork of AionUi by iOfficeAI (https://github.com/iOfficeAI/AionUi),
+licensed under the Apache License, Version 2.0.
+
+Modifications add a multi-tenant, web-only deployment that executes all agents
+and worker processes inside per-session Docker containers, orchestrated by a
+control-plane service. See PLAN.md (or docs/dockerize.md) for architecture.
+
+Original copyright notice:
+
+    Copyright 2025 AionUi (aionui.com)
+    SPDX-License-Identifier: Apache-2.0
+
+Fork-specific changes are licensed under the same Apache License 2.0.
