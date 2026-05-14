@@ -96,6 +96,11 @@ vi.mock('@process/webserver/auth/oidc/oidcRoutes', () => ({
   registerOidcRoutes: vi.fn(),
 }));
 
+vi.mock('@process/webserver/routes/projectRoutes', () => ({
+  // Same rationale as the OIDC mock — covered by dedicated unit tests.
+  registerProjectRoutes: vi.fn(),
+}));
+
 vi.mock('@process/webserver/routes/apiRoutes', () => ({
   registerApiRoutes: registerApiRoutesMock,
 }));

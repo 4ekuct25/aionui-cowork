@@ -15,6 +15,7 @@ import type {
   IConversationRow,
   IMessageRow,
   IPaginatedResult,
+  IProject,
   IQueryResult,
   IUser,
   TChatConversation,
@@ -389,6 +390,94 @@ export class AionUIDatabase {
     try {
       this.db.prepare('UPDATE users SET role = ?, updated_at = ? WHERE id = ?').run(role, Date.now(), userId);
       return { success: true, data: true };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: false };
+    }
+  }
+
+  /**
+   * ==================
+   * Project operations
+   * ==================
+   */
+
+  /**
+   * Insert a new project row. The caller has already written the zip archive
+   * to <DATA_DIR>/uploads/<storage_key>; this method only records metadata.
+   */
+  createProject(input: {
+    id: string;
+    userId: string;
+    name: string;
+    storageKey: string;
+    sizeBytes: number;
+    sha256: string;
+  }): IQueryResult<IProject> {
+    try {
+      const now = Date.now();
+      this.db
+        .prepare(
+          `INSERT INTO projects (id, user_id, name, storage_key, size_bytes, sha256, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(input.id, input.userId, input.name, input.storageKey, input.sizeBytes, input.sha256, now);
+      return {
+        success: true,
+        data: {
+          id: input.id,
+          user_id: input.userId,
+          name: input.name,
+          storage_key: input.storageKey,
+          size_bytes: input.sizeBytes,
+          sha256: input.sha256,
+          created_at: now,
+        },
+      };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Look up a project, scoped to the requesting user. Returns null when the
+   * id does not exist OR is owned by someone else — callers should treat
+   * both as "not found" so we don't leak existence across tenants.
+   */
+  getProjectForUser(projectId: string, userId: string): IQueryResult<IProject | null> {
+    try {
+      const row = this.db.prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?').get(projectId, userId) as
+        | IProject
+        | undefined;
+      return { success: true, data: row ?? null };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: null };
+    }
+  }
+
+  /**
+   * List projects owned by a user, newest first (matches the
+   * idx_projects_user_created index).
+   */
+  listProjectsForUser(userId: string): IQueryResult<IProject[]> {
+    try {
+      const rows = this.db
+        .prepare('SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC')
+        .all(userId) as IProject[];
+      return { success: true, data: rows };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  /**
+   * Delete a project row scoped to the owner. Does NOT touch the underlying
+   * zip file — the caller (ProjectIngestService) is responsible for the
+   * filesystem cleanup, so the two operations stay in the same try/catch.
+   */
+  deleteProjectForUser(projectId: string, userId: string): IQueryResult<boolean> {
+    try {
+      const result = this.db.prepare('DELETE FROM projects WHERE id = ? AND user_id = ?').run(projectId, userId);
+      return { success: true, data: result.changes > 0 };
     } catch (error: any) {
       return { success: false, error: error.message, data: false };
     }

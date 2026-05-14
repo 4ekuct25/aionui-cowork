@@ -1253,6 +1253,39 @@ const migration_v27: IMigration = {
 };
 
 /**
+ * Migration v27 -> v28: Multi-tenant project storage.
+ *
+ * Adds the `projects` table. Each row represents an uploaded zip archive
+ * owned by a single user; later phases mount it into per-session Docker
+ * volumes.
+ */
+const migration_v28: IMigration = {
+  version: 28,
+  name: 'Add projects table',
+  up: (db) => {
+    db.exec(`CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      storage_key TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_projects_user_created ON projects(user_id, created_at DESC)');
+    console.log('[Migration v28] Added projects table');
+  },
+  down: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_projects_user_created');
+    db.exec('DROP INDEX IF EXISTS idx_projects_user_id');
+    db.exec('DROP TABLE IF EXISTS projects');
+    console.log('[Migration v28] Rolled back: removed projects table');
+  },
+};
+
+/**
  * All migrations in order
  */
 // prettier-ignore
@@ -1261,7 +1294,7 @@ export const ALL_MIGRATIONS: IMigration[] = [
   migration_v7, migration_v8, migration_v9, migration_v10, migration_v11, migration_v12,
   migration_v13, migration_v14, migration_v15, migration_v16, migration_v17, migration_v18,
   migration_v19, migration_v20, migration_v21, migration_v22, migration_v23, migration_v24,
-  migration_v25, migration_v26, migration_v27,
+  migration_v25, migration_v26, migration_v27, migration_v28,
 ];
 
 /**

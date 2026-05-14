@@ -45,6 +45,22 @@ export function initSchema(db: ISqliteDriver): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
 
+  // Projects table — uploaded zip archives owned by a single user. Each row
+  // points at one zip file under <DATA_DIR>/uploads/. Sessions later mount
+  // the archive into per-conversation Docker volumes.
+  db.exec(`CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    storage_key TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_projects_user_created ON projects(user_id, created_at DESC)');
+
   // Conversations table (会话表 - 存储TChatConversation)
   db.exec(`CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
@@ -157,4 +173,4 @@ export function setDatabaseVersion(db: ISqliteDriver, version: number): void {
  * Current database schema version
  * Update this when adding new migrations in migrations.ts
  */
-export const CURRENT_DB_VERSION = 27;
+export const CURRENT_DB_VERSION = 28;

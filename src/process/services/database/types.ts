@@ -36,6 +36,21 @@ export interface IUser {
   last_login?: number | null;
 }
 
+/**
+ * Project — an uploaded zip archive owned by a single user. The actual bytes
+ * live under <DATA_DIR>/uploads/<storage_key>; this row tracks ownership,
+ * size and an integrity hash.
+ */
+export interface IProject {
+  id: string;
+  user_id: string;
+  name: string;
+  storage_key: string;
+  size_bytes: number;
+  sha256: string;
+  created_at: number;
+}
+
 // Image metadata removed - images are stored in filesystem and referenced via message.resultDisplay
 
 /**
