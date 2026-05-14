@@ -15,12 +15,28 @@ interface LoginParams {
   remember?: boolean;
 }
 
+interface RegisterParams {
+  username: string;
+  email?: string;
+  password: string;
+}
+
 type LoginErrorCode =
   | 'invalidCredentials'
   | 'tooManyAttempts'
   | 'serverError'
   | 'networkError'
   | 'csrfError'
+  | 'unknown';
+
+type RegisterErrorCode =
+  | 'signupDisabled'
+  | 'invalidInput'
+  | 'usernameTaken'
+  | 'weakPassword'
+  | 'tooManyAttempts'
+  | 'serverError'
+  | 'networkError'
   | 'unknown';
 
 interface LoginResult {
@@ -30,11 +46,20 @@ interface LoginResult {
   shouldClearCache?: boolean;
 }
 
+interface RegisterResult {
+  success: boolean;
+  message?: string;
+  code?: RegisterErrorCode;
+  details?: string[];
+}
+
 interface AuthContextValue {
   ready: boolean;
   user: AuthUser | null;
   status: AuthStatus;
+  oidcEnabled: boolean;
   login: (params: LoginParams) => Promise<LoginResult>;
+  register: (params: RegisterParams) => Promise<RegisterResult>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   clearAuthCache: () => void;
@@ -99,10 +124,32 @@ async function fetchCurrentUser(signal?: AbortSignal): Promise<AuthUser | null> 
   return null;
 }
 
+async function fetchOidcEnabled(signal?: AbortSignal): Promise<boolean> {
+  try {
+    const response = await fetch('/api/auth/oidc/status', {
+      method: 'GET',
+      credentials: 'include',
+      signal,
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const data = (await response.json()) as { success?: boolean; enabled?: boolean };
+    return Boolean(data?.enabled);
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      return false;
+    }
+    console.warn('Failed to fetch OIDC status:', error);
+    return false;
+  }
+}
+
 export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [status, setStatus] = useState<AuthStatus>('checking');
   const [ready, setReady] = useState(false);
+  const [oidcEnabled, setOidcEnabled] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
@@ -135,6 +182,17 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       abortRef.current?.abort();
     };
   }, [refresh]);
+
+  // Probe whether the server advertises an OIDC provider so the login UI can
+  // optionally render an SSO button. Failures fall back to "disabled" silently.
+  useEffect(() => {
+    if (isDesktopRuntime) {
+      return;
+    }
+    const controller = new AbortController();
+    void fetchOidcEnabled(controller.signal).then(setOidcEnabled);
+    return () => controller.abort();
+  }, []);
 
   const login = useCallback(async ({ username, password, remember }: LoginParams): Promise<LoginResult> => {
     try {
@@ -238,6 +296,58 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     }
   }, []);
 
+  const register = useCallback(async ({ username, email, password }: RegisterParams): Promise<RegisterResult> => {
+    if (isDesktopRuntime) {
+      // Signup is a web-only flow; desktop mode is always pre-authenticated.
+      return { success: false, code: 'signupDisabled', message: 'Signup is unavailable in desktop mode' };
+    }
+
+    try {
+      // Reuse the CSRF token plumbing established for /login so the request
+      // satisfies the existing CSRF middleware.
+      const response = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(withCsrfToken({ username, email, password })),
+      });
+      const data = (await response.json()) as {
+        success: boolean;
+        message?: string;
+        details?: string[];
+        user?: AuthUser;
+      };
+
+      if (response.ok && data.success && data.user) {
+        setUser(data.user);
+        setStatus('authenticated');
+        setReady(true);
+        return { success: true };
+      }
+
+      let code: RegisterErrorCode = 'unknown';
+      if (response.status === 403) code = 'signupDisabled';
+      else if (response.status === 400) code = data?.details?.length ? 'weakPassword' : 'invalidInput';
+      else if (response.status === 409) code = 'usernameTaken';
+      else if (response.status === 429) code = 'tooManyAttempts';
+      else if (response.status >= 500) code = 'serverError';
+
+      return {
+        success: false,
+        code,
+        message: data?.message,
+        details: data?.details,
+      };
+    } catch (error) {
+      console.error('Register request failed:', error);
+      return {
+        success: false,
+        code: 'networkError',
+        message: 'Network error. Please try again.',
+      };
+    }
+  }, []);
+
   const logout = useCallback(async () => {
     if (isDesktopRuntime) {
       setUser(null);
@@ -271,12 +381,14 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       ready,
       user,
       status,
+      oidcEnabled,
       login,
+      register,
       logout,
       refresh,
       clearAuthCache,
     }),
-    [login, logout, ready, refresh, status, user]
+    [login, logout, oidcEnabled, ready, refresh, register, status, user]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -22,5 +22,36 @@
     "networkError": "Bağlantı başarısız, lütfen tekrar deneyin",
     "serverError": "Sunucu hatası, lütfen daha sonra tekrar deneyin",
     "unknown": "Giriş başarısız, lütfen tekrar deneyin"
+  },
+  "sso": {
+    "button": "Continue with SSO"
+  },
+  "signup": {
+    "pageTitle": "AionUi - Create account",
+    "title": "Create your account",
+    "subtitle": "Sign up to start using AionUi",
+    "email": "Email (optional)",
+    "emailPlaceholder": "you@example.com",
+    "passwordConfirm": "Confirm password",
+    "passwordConfirmPlaceholder": "Repeat your password",
+    "submit": "Create account",
+    "submitting": "Creating account...",
+    "success": "Account created! Redirecting...",
+    "haveAccount": "Already have an account?",
+    "signInLink": "Sign in",
+    "noAccount": "Don't have an account?",
+    "createLink": "Create one",
+    "errors": {
+      "empty": "Username and password are required",
+      "passwordMismatch": "Passwords do not match",
+      "disabled": "Local signup is disabled on this server",
+      "invalidInput": "Please check your input and try again",
+      "weakPassword": "Password does not meet security requirements",
+      "usernameTaken": "This username is already taken",
+      "tooManyAttempts": "Too many attempts, please try again later",
+      "networkError": "Connection failed, please try again",
+      "serverError": "Server error, please try again later",
+      "unknown": "Sign-up failed, please try again"
+    }
   }
 }

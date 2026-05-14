@@ -1,8 +1,8 @@
 import loginLogo from '@renderer/assets/logos/brand/app.png';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { changeLanguage } from '@/renderer/services/i18n';
 import { Link, useNavigate } from 'react-router-dom';
+import { changeLanguage } from '@/renderer/services/i18n';
 import AppLoader from '@renderer/components/layout/AppLoader';
 import { useAuth } from '../../hooks/context/AuthContext';
 import './LoginPage.css';
@@ -12,39 +12,20 @@ type MessageState = {
   text: string;
 };
 
-const REMEMBER_ME_KEY = 'rememberMe';
-const REMEMBERED_USERNAME_KEY = 'rememberedUsername';
-const REMEMBERED_PASSWORD_KEY = 'rememberedPassword';
-
-// Simple obfuscation for stored credentials (not cryptographically secure, but prevents plain text storage)
-const obfuscate = (text: string): string => {
-  const encoded = btoa(encodeURIComponent(text));
-  return encoded.split('').toReversed().join('');
-};
-
-const deobfuscate = (text: string): string => {
-  try {
-    const reversed = text.split('').toReversed().join('');
-    return decodeURIComponent(atob(reversed));
-  } catch {
-    return '';
-  }
-};
-
-const LoginPage: React.FC = () => {
+const SignupPage: React.FC = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const { status, login, oidcEnabled } = useAuth();
+  const { status, register } = useAuth();
 
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [rememberMe, setRememberMe] = useState(false);
+  const [passwordConfirm, setPasswordConfirm] = useState('');
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [message, setMessage] = useState<MessageState | null>(null);
   const [loading, setLoading] = useState(false);
 
   const usernameRef = useRef<HTMLInputElement | null>(null);
-  const passwordRef = useRef<HTMLInputElement | null>(null);
   const messageTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -58,7 +39,7 @@ const LoginPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    document.title = t('login.pageTitle');
+    document.title = t('login.signup.pageTitle');
   }, [t]);
 
   useEffect(() => {
@@ -66,23 +47,7 @@ const LoginPage: React.FC = () => {
   }, [i18n.language]);
 
   useEffect(() => {
-    const isRememberMe = localStorage.getItem(REMEMBER_ME_KEY) === 'true';
-    if (isRememberMe) {
-      const storedUsername = localStorage.getItem(REMEMBERED_USERNAME_KEY);
-      const storedPassword = localStorage.getItem(REMEMBERED_PASSWORD_KEY);
-      if (storedUsername) setUsername(deobfuscate(storedUsername));
-      if (storedPassword) setPassword(deobfuscate(storedPassword));
-      setRememberMe(true);
-    }
-    window.setTimeout(() => {
-      usernameRef.current?.focus();
-    }, 0);
-
-    return () => {
-      if (messageTimer.current) {
-        window.clearTimeout(messageTimer.current);
-      }
-    };
+    window.setTimeout(() => usernameRef.current?.focus(), 0);
   }, []);
 
   useEffect(() => {
@@ -134,48 +99,53 @@ const LoginPage: React.FC = () => {
     async (event: React.FormEvent) => {
       event.preventDefault();
       const trimmedUsername = username.trim();
+      const trimmedEmail = email.trim();
 
       if (!trimmedUsername || !password) {
-        showMessage({ type: 'error', text: t('login.errors.empty') });
+        showMessage({ type: 'error', text: t('login.signup.errors.empty') });
+        return;
+      }
+      if (password !== passwordConfirm) {
+        showMessage({ type: 'error', text: t('login.signup.errors.passwordMismatch') });
         return;
       }
 
       setLoading(true);
       setMessage(null);
 
-      const result = await login({ username: trimmedUsername, password, remember: rememberMe });
+      const result = await register({
+        username: trimmedUsername,
+        email: trimmedEmail || undefined,
+        password,
+      });
 
       if (result.success) {
-        if (rememberMe) {
-          localStorage.setItem(REMEMBER_ME_KEY, 'true');
-          localStorage.setItem(REMEMBERED_USERNAME_KEY, obfuscate(trimmedUsername));
-          localStorage.setItem(REMEMBERED_PASSWORD_KEY, obfuscate(password));
-        } else {
-          localStorage.removeItem(REMEMBER_ME_KEY);
-          localStorage.removeItem(REMEMBERED_USERNAME_KEY);
-          localStorage.removeItem(REMEMBERED_PASSWORD_KEY);
-        }
-
-        const successText = t('login.success');
-        showMessage({ type: 'success', text: successText });
-
+        showMessage({ type: 'success', text: t('login.signup.success') });
         window.setTimeout(() => {
           void navigate('/guid', { replace: true });
         }, 600);
       } else {
         const errorText = (() => {
           switch (result.code) {
-            case 'invalidCredentials':
-              return t('login.errors.invalidCredentials');
+            case 'signupDisabled':
+              return t('login.signup.errors.disabled');
+            case 'invalidInput':
+              return t('login.signup.errors.invalidInput');
+            case 'weakPassword':
+              return result.details?.length
+                ? `${t('login.signup.errors.weakPassword')} (${result.details.join('; ')})`
+                : t('login.signup.errors.weakPassword');
+            case 'usernameTaken':
+              return t('login.signup.errors.usernameTaken');
             case 'tooManyAttempts':
-              return t('login.errors.tooManyAttempts');
+              return t('login.signup.errors.tooManyAttempts');
             case 'networkError':
-              return t('login.errors.networkError');
+              return t('login.signup.errors.networkError');
             case 'serverError':
-              return t('login.errors.serverError');
+              return t('login.signup.errors.serverError');
             case 'unknown':
             default:
-              return result.message ?? t('login.errors.unknown');
+              return result.message ?? t('login.signup.errors.unknown');
           }
         })();
 
@@ -184,7 +154,7 @@ const LoginPage: React.FC = () => {
 
       setLoading(false);
     },
-    [login, navigate, password, rememberMe, showMessage, t, username]
+    [email, navigate, password, passwordConfirm, register, showMessage, t, username]
   );
 
   if (status === 'checking') {
@@ -193,12 +163,6 @@ const LoginPage: React.FC = () => {
 
   return (
     <div className='login-page'>
-      {/* <div className='login-page__background' aria-hidden='true'>
-        <div className='login-page__background-circle login-page__background-circle--lg' />
-        <div className='login-page__background-circle login-page__background-circle--md' />
-        <div className='login-page__background-circle login-page__background-circle--sm' />
-      </div> */}
-
       <div className='login-page__card'>
         <label className='login-page__lang-select-wrapper' htmlFor='lang-select'>
           <select
@@ -219,30 +183,19 @@ const LoginPage: React.FC = () => {
           <div className='login-page__logo'>
             <img src={loginLogo} alt={t('login.brand')} />
           </div>
-          <h1 className='login-page__title'>{t('login.brand')}</h1>
-          <p className='login-page__subtitle'>{t('login.subtitle')}</p>
+          <h1 className='login-page__title'>{t('login.signup.title')}</h1>
+          <p className='login-page__subtitle'>{t('login.signup.subtitle')}</p>
         </div>
 
         <form className='login-page__form' onSubmit={handleSubmit}>
           <div className='login-page__form-item'>
-            <label className='login-page__label' htmlFor='username'>
+            <label className='login-page__label' htmlFor='signup-username'>
               {t('login.username')}
             </label>
             <div className='login-page__input-wrapper'>
-              <svg
-                className='login-page__input-icon'
-                viewBox='0 0 24 24'
-                fill='none'
-                stroke='currentColor'
-                strokeWidth='2'
-                aria-hidden='true'
-              >
-                <path d='M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2' />
-                <circle cx='12' cy='7' r='4' />
-              </svg>
               <input
                 ref={usernameRef}
-                id='username'
+                id='signup-username'
                 name='username'
                 className='login-page__input'
                 placeholder={t('login.usernamePlaceholder')}
@@ -250,34 +203,42 @@ const LoginPage: React.FC = () => {
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 aria-required='true'
+                minLength={3}
+                maxLength={64}
               />
             </div>
           </div>
 
           <div className='login-page__form-item'>
-            <label className='login-page__label' htmlFor='password'>
+            <label className='login-page__label' htmlFor='signup-email'>
+              {t('login.signup.email')}
+            </label>
+            <div className='login-page__input-wrapper'>
+              <input
+                id='signup-email'
+                name='email'
+                type='email'
+                className='login-page__input'
+                placeholder={t('login.signup.emailPlaceholder')}
+                autoComplete='email'
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className='login-page__form-item'>
+            <label className='login-page__label' htmlFor='signup-password'>
               {t('login.password')}
             </label>
             <div className='login-page__input-wrapper'>
-              <svg
-                className='login-page__input-icon'
-                viewBox='0 0 24 24'
-                fill='none'
-                stroke='currentColor'
-                strokeWidth='2'
-                aria-hidden='true'
-              >
-                <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
-                <path d='M7 11V7a5 5 0 0 1 10 0v4' />
-              </svg>
               <input
-                ref={passwordRef}
-                id='password'
+                id='signup-password'
                 name='password'
                 type={passwordVisible ? 'text' : 'password'}
                 className='login-page__input'
                 placeholder={t('login.passwordPlaceholder')}
-                autoComplete='current-password'
+                autoComplete='new-password'
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 aria-required='true'
@@ -305,14 +266,23 @@ const LoginPage: React.FC = () => {
             </div>
           </div>
 
-          <div className='login-page__checkbox'>
-            <input
-              type='checkbox'
-              id='remember-me'
-              checked={rememberMe}
-              onChange={(event) => setRememberMe(event.target.checked)}
-            />
-            <label htmlFor='remember-me'>{t('login.rememberMe')}</label>
+          <div className='login-page__form-item'>
+            <label className='login-page__label' htmlFor='signup-password-confirm'>
+              {t('login.signup.passwordConfirm')}
+            </label>
+            <div className='login-page__input-wrapper'>
+              <input
+                id='signup-password-confirm'
+                name='passwordConfirm'
+                type={passwordVisible ? 'text' : 'password'}
+                className='login-page__input'
+                placeholder={t('login.signup.passwordConfirmPlaceholder')}
+                autoComplete='new-password'
+                value={passwordConfirm}
+                onChange={(event) => setPasswordConfirm(event.target.value)}
+                aria-required='true'
+              />
+            </div>
           </div>
 
           <button type='submit' className='login-page__submit' disabled={loading}>
@@ -331,7 +301,7 @@ const LoginPage: React.FC = () => {
                 />
               </svg>
             )}
-            <span>{loading ? t('login.submitting') : t('login.submit')}</span>
+            <span>{loading ? t('login.signup.submitting') : t('login.signup.submit')}</span>
           </button>
 
           <div
@@ -344,23 +314,12 @@ const LoginPage: React.FC = () => {
           </div>
         </form>
 
-        {oidcEnabled && (
-          <a className='login-page__sso' href='/api/auth/oidc/login' aria-label={t('login.sso.button')}>
-            <span>{t('login.sso.button')}</span>
-          </a>
-        )}
-
         <div className='login-page__footer'>
           <div className='login-page__footer-content'>
-            <span>{t('login.signup.noAccount')}</span>
-            <Link to='/signup' className='login-page__footer-link'>
-              {t('login.signup.createLink')}
+            <span>{t('login.signup.haveAccount')}</span>
+            <Link to='/login' className='login-page__footer-link'>
+              {t('login.signup.signInLink')}
             </Link>
-          </div>
-          <div className='login-page__footer-content'>
-            <span>{t('login.footerPrimary')}</span>
-            <span className='login-page__footer-divider'>•</span>
-            <span>{t('login.footerSecondary')}</span>
           </div>
         </div>
       </div>
@@ -368,4 +327,4 @@ const LoginPage: React.FC = () => {
   );
 };
 
-export default LoginPage;
+export default SignupPage;
