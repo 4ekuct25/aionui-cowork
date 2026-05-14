@@ -18,6 +18,7 @@
 export { AuthMiddleware } from './middleware/AuthMiddleware';
 export { TokenMiddleware, TokenUtils, createAuthMiddleware } from './middleware/TokenMiddleware';
 export type { TokenPayload } from './middleware/TokenMiddleware';
+export { requireRole } from './middleware/RoleGuard';
 
 // 仓储层 / Repository
 export { UserRepository } from './repository/UserRepository';

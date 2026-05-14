@@ -25,6 +25,9 @@ export function initSchema(db: ISqliteDriver): void {
   }
 
   // Users table (账户系统)
+  // role: 'admin' | 'user' — controls access to admin-only endpoints
+  // oidc_sub: stable subject identifier from external OIDC provider (Keycloak),
+  //           NULL for local-password users; populated on first OIDC login.
   db.exec(`CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
@@ -32,12 +35,15 @@ export function initSchema(db: ISqliteDriver): void {
     password_hash TEXT NOT NULL,
     avatar_path TEXT,
     jwt_secret TEXT,
+    role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'user')),
+    oidc_sub TEXT UNIQUE,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     last_login INTEGER
   )`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
 
   // Conversations table (会话表 - 存储TChatConversation)
   db.exec(`CREATE TABLE IF NOT EXISTS conversations (
@@ -151,4 +157,4 @@ export function setDatabaseVersion(db: ISqliteDriver, version: number): void {
  * Current database schema version
  * Update this when adding new migrations in migrations.ts
  */
-export const CURRENT_DB_VERSION = 26;
+export const CURRENT_DB_VERSION = 27;

@@ -155,9 +155,12 @@ export const createAuthMiddleware = (type: 'json' | 'html' = 'json') => {
     }
 
     // 4. 附加用户信息到请求对象 / Attach user info to request object
+    // `role` is included so downstream guards can enforce admin access
+    // without an extra DB round-trip per request.
     req.user = {
       id: user.id,
       username: user.username,
+      role: user.role,
     };
 
     next();

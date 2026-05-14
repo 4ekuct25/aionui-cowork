@@ -1214,6 +1214,45 @@ const migration_v26: IMigration = {
 };
 
 /**
+ * Migration v26 -> v27: Multi-tenant role + OIDC subject on users table.
+ *
+ * Adds:
+ * - users.role: 'admin' | 'user' (default 'user') — guards admin-only endpoints.
+ * - users.oidc_sub: stable subject from external OIDC provider (Keycloak),
+ *   nullable for local-password users; populated on first OIDC login.
+ *
+ * SQLite cannot ADD COLUMN UNIQUE in a single statement, so the UNIQUE
+ * constraint on oidc_sub is enforced via a partial unique index that ignores
+ * NULL rows (the natural behaviour we want — many users may have NULL).
+ */
+const migration_v27: IMigration = {
+  version: 27,
+  name: 'Add users.role and users.oidc_sub',
+  up: (db) => {
+    db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+    db.exec('ALTER TABLE users ADD COLUMN oidc_sub TEXT');
+    db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_sub_unique ON users(oidc_sub) WHERE oidc_sub IS NOT NULL'
+    );
+    db.exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
+    console.log('[Migration v27] Added users.role and users.oidc_sub');
+  },
+  down: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_users_role');
+    db.exec('DROP INDEX IF EXISTS idx_users_oidc_sub_unique');
+    // SQLite >= 3.35 supports DROP COLUMN; older drivers fall back to no-op
+    // (columns become unused metadata rather than blocking rollback).
+    try {
+      db.exec('ALTER TABLE users DROP COLUMN oidc_sub');
+      db.exec('ALTER TABLE users DROP COLUMN role');
+    } catch (error) {
+      console.warn('[Migration v27] DROP COLUMN unsupported on this SQLite version:', error);
+    }
+    console.log('[Migration v27] Rolled back: removed role and oidc_sub');
+  },
+};
+
+/**
  * All migrations in order
  */
 // prettier-ignore
@@ -1222,7 +1261,7 @@ export const ALL_MIGRATIONS: IMigration[] = [
   migration_v7, migration_v8, migration_v9, migration_v10, migration_v11, migration_v12,
   migration_v13, migration_v14, migration_v15, migration_v16, migration_v17, migration_v18,
   migration_v19, migration_v20, migration_v21, migration_v22, migration_v23, migration_v24,
-  migration_v25, migration_v26,
+  migration_v25, migration_v26, migration_v27,
 ];
 
 /**

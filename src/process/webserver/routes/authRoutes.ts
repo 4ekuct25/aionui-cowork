@@ -87,6 +87,22 @@ const QR_LOGIN_PAGE_HTML = `<!DOCTYPE html>
 </html>`;
 
 /**
+ * Whether public local-account signup is enabled.
+ *
+ * In multi-tenant deployments the server administrator enables this via the
+ * `ENABLE_LOCAL_SIGNUP=true` env var. When disabled the `/api/auth/register`
+ * endpoint responds 403 and only the legacy auto-generated admin account
+ * (or SSO via OIDC) can be used.
+ */
+function isLocalSignupEnabled(): boolean {
+  const value = (process.env.ENABLE_LOCAL_SIGNUP ?? '').trim().toLowerCase();
+  return value === 'true' || value === '1' || value === 'yes';
+}
+
+/** Lightweight email format check. Anything stricter belongs in a schema layer. */
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
  * 注册认证相关路由
  * Register authentication routes
  */
@@ -147,6 +163,94 @@ export function registerAuthRoutes(app: Express): void {
       });
     } catch (error) {
       console.error('Login error:', error);
+      res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  });
+
+  /**
+   * 用户注册 - Register endpoint (multi-tenant signup)
+   * POST /api/auth/register
+   *
+   * Gated by ENABLE_LOCAL_SIGNUP. The first registered user becomes the
+   * admin so that a fresh deployment can be bootstrapped without console
+   * password reads.
+   */
+  app.post('/api/auth/register', authRateLimiter, async (req: Request, res: Response) => {
+    try {
+      if (!isLocalSignupEnabled()) {
+        res.status(403).json({
+          success: false,
+          message: 'Local account signup is disabled on this server',
+        });
+        return;
+      }
+
+      const rawUsername = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+      const rawEmail = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+      if (!rawUsername || rawUsername.length < 3 || rawUsername.length > 64) {
+        res.status(400).json({
+          success: false,
+          message: 'Username must be between 3 and 64 characters',
+        });
+        return;
+      }
+
+      if (rawEmail && !EMAIL_REGEX.test(rawEmail)) {
+        res.status(400).json({ success: false, message: 'Invalid email format' });
+        return;
+      }
+
+      const passwordValidation = AuthService.validatePasswordStrength(password);
+      if (!passwordValidation.isValid) {
+        res.status(400).json({
+          success: false,
+          message: 'Password does not meet security requirements',
+          details: passwordValidation.errors,
+        });
+        return;
+      }
+
+      // Reject duplicates explicitly so the client gets a 409 instead of a
+      // 500 with a SQLite UNIQUE constraint message.
+      const existingByUsername = await UserRepository.findByUsername(rawUsername);
+      if (existingByUsername) {
+        res.status(409).json({ success: false, message: 'Username is already taken' });
+        return;
+      }
+
+      // The first registered user becomes admin so the deployment has someone
+      // to manage subsequent invitations.
+      const userCount = await UserRepository.countUsers();
+      const role = userCount === 0 ? 'admin' : 'user';
+
+      const passwordHash = await AuthService.hashPassword(password);
+      const newUser = await UserRepository.createUser(rawUsername, passwordHash, {
+        email: rawEmail || undefined,
+        role,
+      });
+
+      // Auto-login so the client doesn't need a second round-trip.
+      const token = await AuthService.generateToken(newUser);
+      await UserRepository.updateLastLogin(newUser.id);
+      res.cookie(AUTH_CONFIG.COOKIE.NAME, token, {
+        ...getCookieOptions(req),
+        maxAge: AUTH_CONFIG.TOKEN.COOKIE_MAX_AGE,
+      });
+
+      res.status(201).json({
+        success: true,
+        user: {
+          id: newUser.id,
+          username: newUser.username,
+          email: newUser.email,
+          role: newUser.role,
+        },
+        token,
+      });
+    } catch (error) {
+      console.error('Register error:', error);
       res.status(500).json({ success: false, message: 'Internal server error' });
     }
   });

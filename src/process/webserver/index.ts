@@ -17,6 +17,7 @@ import { initWebAdapter } from './adapter';
 import { setupBasicMiddleware, setupCors, setupErrorHandler } from './setup';
 import { registerAuthRoutes } from './routes/authRoutes';
 import { registerApiRoutes } from './routes/apiRoutes';
+import { registerOidcRoutes } from './auth/oidc/oidcRoutes';
 import { registerStaticRoutes, resolveRendererPath, VITE_DEV_PORT } from './routes/staticRoutes';
 import { generateQRLoginUrlDirect } from '@process/bridge/webuiQR';
 
@@ -171,7 +172,9 @@ async function initializeDefaultAdmin(): Promise<{
       return { username, password };
     }
 
-    await UserRepository.createUser(username, hashedPassword);
+    // First bootstrap account is always created as admin so it can manage
+    // future users (signup, role assignment, deletions).
+    await UserRepository.createUser(username, hashedPassword, { role: 'admin' });
     initialAdminPassword = password; // 存储初始密码 / Store initial password
     return { username, password };
   } catch (error) {
@@ -309,6 +312,7 @@ export async function startWebServerWithInstance(port: number, allowRemote = fal
 
   // 注册路由 / Register routes
   registerAuthRoutes(app);
+  registerOidcRoutes(app);
   registerApiRoutes(app);
   registerStaticRoutes(app);
 

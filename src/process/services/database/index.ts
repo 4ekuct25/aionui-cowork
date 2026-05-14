@@ -19,6 +19,7 @@ import type {
   IUser,
   TChatConversation,
   TMessage,
+  UserRole,
 } from './types';
 import { conversationToRow, messageToRow, rowToConversation, rowToMessage } from './types';
 import type { IMessageSearchItem, IMessageSearchResponse } from '@/common/types/database';
@@ -229,8 +230,8 @@ export class AionUIDatabase {
     const now = Date.now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO users (id, username, email, password_hash, avatar_path, created_at, updated_at, last_login, jwt_secret)
-         VALUES (?, ?, NULL, ?, NULL, ?, ?, NULL, NULL)`
+        `INSERT OR IGNORE INTO users (id, username, email, password_hash, avatar_path, role, created_at, updated_at, last_login, jwt_secret)
+         VALUES (?, ?, NULL, ?, NULL, 'admin', ?, ?, NULL, NULL)`
       )
       .run(this.defaultUserId, this.defaultUserId, this.systemPasswordPlaceholder, now, now);
   }
@@ -296,19 +297,26 @@ export class AionUIDatabase {
    * @param username - Username (unique identifier)
    * @param email - User email (optional)
    * @param passwordHash - Hashed password (use bcrypt)
+   * @param role - Account role; defaults to 'user'. Pass 'admin' for the first
+   *               registered user or for OIDC-mapped administrators.
    * @returns Query result with created user data
    */
-  createUser(username: string, email: string | undefined, passwordHash: string): IQueryResult<IUser> {
+  createUser(
+    username: string,
+    email: string | undefined,
+    passwordHash: string,
+    role: UserRole = 'user'
+  ): IQueryResult<IUser> {
     try {
       const userId = `user_${Date.now()}`;
       const now = Date.now();
 
       const stmt = this.db.prepare(`
-        INSERT INTO users (id, username, email, password_hash, avatar_path, created_at, updated_at, last_login)
-        VALUES (?, ?, ?, ?, NULL, ?, ?, NULL)
+        INSERT INTO users (id, username, email, password_hash, avatar_path, role, created_at, updated_at, last_login)
+        VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)
       `);
 
-      stmt.run(userId, username, email ?? null, passwordHash, now, now);
+      stmt.run(userId, username, email ?? null, passwordHash, role, now, now);
 
       return {
         success: true,
@@ -317,6 +325,8 @@ export class AionUIDatabase {
           username,
           email,
           password_hash: passwordHash,
+          role,
+          oidc_sub: null,
           created_at: now,
           updated_at: now,
           last_login: null,
@@ -327,6 +337,60 @@ export class AionUIDatabase {
         success: false,
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Look up a user by their OIDC subject identifier (Keycloak `sub` claim).
+   * Returns null if no user is linked to the given subject yet.
+   *
+   * @param oidcSub - Stable subject identifier from the OIDC provider
+   * @returns Query result with user data, or data=null if not linked
+   */
+  getUserByOidcSub(oidcSub: string): IQueryResult<IUser | null> {
+    try {
+      const user = this.db.prepare('SELECT * FROM users WHERE oidc_sub = ?').get(oidcSub) as IUser | undefined;
+      return {
+        success: true,
+        data: user ?? null,
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message,
+        data: null,
+      };
+    }
+  }
+
+  /**
+   * Link an OIDC subject identifier to an existing user. Used when a local
+   * account first logs in via the SSO provider.
+   *
+   * @param userId - Target user ID
+   * @param oidcSub - Stable subject identifier from the OIDC provider
+   */
+  linkOidcSub(userId: string, oidcSub: string): IQueryResult<boolean> {
+    try {
+      this.db.prepare('UPDATE users SET oidc_sub = ?, updated_at = ? WHERE id = ?').run(oidcSub, Date.now(), userId);
+      return { success: true, data: true };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: false };
+    }
+  }
+
+  /**
+   * Update a user's role (used by admin to grant/revoke admin privileges).
+   *
+   * @param userId - Target user ID
+   * @param role - New role value
+   */
+  updateUserRole(userId: string, role: UserRole): IQueryResult<boolean> {
+    try {
+      this.db.prepare('UPDATE users SET role = ?, updated_at = ? WHERE id = ?').run(role, Date.now(), userId);
+      return { success: true, data: true };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: false };
     }
   }
 

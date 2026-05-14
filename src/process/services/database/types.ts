@@ -15,6 +15,11 @@ import type { TMessage } from '@/common/chat/chatLib';
  */
 
 /**
+ * User account role. 'admin' may manage other users; 'user' only owns its own data.
+ */
+export type UserRole = 'admin' | 'user';
+
+/**
  * User account (新增的账户系统)
  */
 export interface IUser {
@@ -24,6 +29,8 @@ export interface IUser {
   password_hash: string;
   avatar_path?: string;
   jwt_secret?: string | null;
+  role: UserRole;
+  oidc_sub?: string | null;
   created_at: number;
   updated_at: number;
   last_login?: number | null;

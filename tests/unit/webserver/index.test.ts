@@ -90,6 +90,12 @@ vi.mock('@process/webserver/routes/authRoutes', () => ({
   registerAuthRoutes: registerAuthRoutesMock,
 }));
 
+vi.mock('@process/webserver/auth/oidc/oidcRoutes', () => ({
+  // OIDC routes are exercised by their own unit tests — keep this mock inert
+  // so the index bootstrap test doesn't depend on a real Express app.
+  registerOidcRoutes: vi.fn(),
+}));
+
 vi.mock('@process/webserver/routes/apiRoutes', () => ({
   registerApiRoutes: registerApiRoutesMock,
 }));

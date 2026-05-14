@@ -6,15 +6,26 @@
 
 import { AUTH_CONFIG } from '@process/webserver/config/constants';
 import { getDatabase } from '@process/services/database/export';
-import type { IUser, IQueryResult } from '@process/services/database/types';
+import type { IUser, IQueryResult, UserRole } from '@process/services/database/types';
 
 /**
  * 认证用户类型，仅包含必要的认证字段
- * Authentication user type containing only essential auth fields
+ * Authentication user type containing only essential auth fields.
+ * Includes role and oidc_sub so callers can enforce role guards and link SSO
+ * identities without re-querying the database.
  */
 export type AuthUser = Pick<
   IUser,
-  'id' | 'username' | 'password_hash' | 'jwt_secret' | 'created_at' | 'updated_at' | 'last_login'
+  | 'id'
+  | 'username'
+  | 'email'
+  | 'password_hash'
+  | 'jwt_secret'
+  | 'role'
+  | 'oidc_sub'
+  | 'created_at'
+  | 'updated_at'
+  | 'last_login'
 >;
 
 /**
@@ -41,8 +52,11 @@ function mapUser(row: IUser): AuthUser {
   return {
     id: row.id,
     username: row.username,
+    email: row.email,
     password_hash: row.password_hash,
     jwt_secret: row.jwt_secret ?? null,
+    role: row.role,
+    oidc_sub: row.oidc_sub ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     last_login: row.last_login ?? null,
@@ -108,16 +122,57 @@ export const UserRepository = {
 
   /**
    * 创建新用户
-   * Create a new user
-   * @param username - 用户名 / Username
-   * @param passwordHash - 密码哈希 / Password hash
-   * @returns 创建的用户 / Created user
+   * Create a new user.
+   *
+   * @param username - Username (unique)
+   * @param passwordHash - Bcrypt password hash
+   * @param options - Optional email + role override. The first registered
+   *                  user should be created with role='admin'.
    */
-  async createUser(username: string, passwordHash: string): Promise<AuthUser> {
+  async createUser(
+    username: string,
+    passwordHash: string,
+    options: { email?: string; role?: UserRole } = {}
+  ): Promise<AuthUser> {
     const db = await getDatabase();
-    const result = db.createUser(username, undefined, passwordHash);
+    const result = db.createUser(username, options.email, passwordHash, options.role ?? 'user');
     const user = unwrap(result, 'Failed to create user');
     return mapUser(user);
+  },
+
+  /**
+   * Look up a user by their OIDC subject identifier. Returns null when no
+   * local account is linked to the given provider subject yet.
+   */
+  async findByOidcSub(oidcSub: string): Promise<AuthUser | null> {
+    const db = await getDatabase();
+    const result = db.getUserByOidcSub(oidcSub);
+    if (!result.success || !result.data) {
+      return null;
+    }
+    return mapUser(result.data);
+  },
+
+  /**
+   * Link an OIDC subject to an existing local user (first SSO login).
+   */
+  async linkOidcSub(userId: string, oidcSub: string): Promise<void> {
+    const db = await getDatabase();
+    const result = db.linkOidcSub(userId, oidcSub);
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to link OIDC subject');
+    }
+  },
+
+  /**
+   * Update a user's role. Admin-only operation in the route layer.
+   */
+  async updateRole(userId: string, role: UserRole): Promise<void> {
+    const db = await getDatabase();
+    const result = db.updateUserRole(userId, role);
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to update user role');
+    }
   },
 
   /**
