@@ -51,6 +51,31 @@ export interface IProject {
   created_at: number;
 }
 
+/**
+ * Session container lifecycle state.
+ * - starting: docker run requested, container ID not yet known.
+ * - running:  container is up and ready for `docker exec` traffic.
+ * - paused:   evicted to save resources; volume preserved.
+ * - stopped:  user closed the chat; cleanup pending or done.
+ */
+export type DockerSessionStatus = 'starting' | 'running' | 'paused' | 'stopped';
+
+/**
+ * Docker session row — one per chat conversation that has spun up a sandbox
+ * container. The control-plane reads this to resume sessions across server
+ * restarts and to drive GC of orphaned containers/volumes.
+ */
+export interface IDockerSession {
+  conversation_id: string;
+  user_id: string;
+  project_id: string;
+  container_id: string | null;
+  volume_name: string;
+  status: DockerSessionStatus;
+  started_at: number;
+  last_seen_at: number;
+}
+
 // Image metadata removed - images are stored in filesystem and referenced via message.resultDisplay
 
 /**

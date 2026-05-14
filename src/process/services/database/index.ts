@@ -12,7 +12,9 @@ import path from 'path';
 import { runMigrations as executeMigrations } from './migrations';
 import { CURRENT_DB_VERSION, getDatabaseVersion, initSchema, setDatabaseVersion } from './schema';
 import type {
+  DockerSessionStatus,
   IConversationRow,
+  IDockerSession,
   IMessageRow,
   IPaginatedResult,
   IProject,
@@ -477,6 +479,102 @@ export class AionUIDatabase {
   deleteProjectForUser(projectId: string, userId: string): IQueryResult<boolean> {
     try {
       const result = this.db.prepare('DELETE FROM projects WHERE id = ? AND user_id = ?').run(projectId, userId);
+      return { success: true, data: result.changes > 0 };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: false };
+    }
+  }
+
+  /**
+   * ==================
+   * Docker session operations
+   * ==================
+   */
+
+  /**
+   * Insert or replace a session row keyed by conversation_id. Used both on
+   * initial acquire (status='starting') and after the container is up
+   * (status='running' with container_id populated).
+   */
+  upsertDockerSession(input: IDockerSession): IQueryResult<IDockerSession> {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO docker_sessions
+             (conversation_id, user_id, project_id, container_id, volume_name, status, started_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(conversation_id) DO UPDATE SET
+             container_id = excluded.container_id,
+             volume_name = excluded.volume_name,
+             status = excluded.status,
+             last_seen_at = excluded.last_seen_at`
+        )
+        .run(
+          input.conversation_id,
+          input.user_id,
+          input.project_id,
+          input.container_id,
+          input.volume_name,
+          input.status,
+          input.started_at,
+          input.last_seen_at
+        );
+      return { success: true, data: input };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Resolve a session, scoped to the requesting user. Returns null when the
+   * conversation_id doesn't exist or belongs to someone else.
+   */
+  getDockerSessionForUser(conversationId: string, userId: string): IQueryResult<IDockerSession | null> {
+    try {
+      const row = this.db
+        .prepare('SELECT * FROM docker_sessions WHERE conversation_id = ? AND user_id = ?')
+        .get(conversationId, userId) as IDockerSession | undefined;
+      return { success: true, data: row ?? null };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: null };
+    }
+  }
+
+  /**
+   * List sessions in a given status. Used by GC and admin endpoints to find
+   * containers that should be cleaned up or surfaced.
+   */
+  listDockerSessionsByStatus(status: DockerSessionStatus): IQueryResult<IDockerSession[]> {
+    try {
+      const rows = this.db.prepare('SELECT * FROM docker_sessions WHERE status = ?').all(status) as IDockerSession[];
+      return { success: true, data: rows };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  /**
+   * Mark a session as stopped without destroying the row. The volume can be
+   * GC'd separately once the row is deleted via deleteDockerSession.
+   */
+  markDockerSessionStopped(conversationId: string): IQueryResult<boolean> {
+    try {
+      const result = this.db
+        .prepare("UPDATE docker_sessions SET status = 'stopped', last_seen_at = ? WHERE conversation_id = ?")
+        .run(Date.now(), conversationId);
+      return { success: true, data: result.changes > 0 };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: false };
+    }
+  }
+
+  /**
+   * Drop the session row entirely. Caller is responsible for stopping the
+   * container and removing the volume in the filesystem before calling this.
+   */
+  deleteDockerSession(conversationId: string): IQueryResult<boolean> {
+    try {
+      const result = this.db.prepare('DELETE FROM docker_sessions WHERE conversation_id = ?').run(conversationId);
       return { success: true, data: result.changes > 0 };
     } catch (error: any) {
       return { success: false, error: error.message, data: false };

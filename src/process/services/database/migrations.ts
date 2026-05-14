@@ -1286,6 +1286,42 @@ const migration_v28: IMigration = {
 };
 
 /**
+ * Migration v28 -> v29: Docker session tracking.
+ *
+ * Adds the `docker_sessions` table — one row per chat conversation that has
+ * an associated session container. The control-plane uses this to resume
+ * containers across restarts and to GC orphans on a schedule.
+ */
+const migration_v29: IMigration = {
+  version: 29,
+  name: 'Add docker_sessions table',
+  up: (db) => {
+    db.exec(`CREATE TABLE IF NOT EXISTS docker_sessions (
+      conversation_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      container_id TEXT,
+      volume_name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('starting', 'running', 'paused', 'stopped')),
+      started_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_docker_sessions_user_id ON docker_sessions(user_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_docker_sessions_status ON docker_sessions(status)');
+    console.log('[Migration v29] Added docker_sessions table');
+  },
+  down: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_docker_sessions_status');
+    db.exec('DROP INDEX IF EXISTS idx_docker_sessions_user_id');
+    db.exec('DROP TABLE IF EXISTS docker_sessions');
+    console.log('[Migration v29] Rolled back: removed docker_sessions table');
+  },
+};
+
+/**
  * All migrations in order
  */
 // prettier-ignore
@@ -1294,7 +1330,7 @@ export const ALL_MIGRATIONS: IMigration[] = [
   migration_v7, migration_v8, migration_v9, migration_v10, migration_v11, migration_v12,
   migration_v13, migration_v14, migration_v15, migration_v16, migration_v17, migration_v18,
   migration_v19, migration_v20, migration_v21, migration_v22, migration_v23, migration_v24,
-  migration_v25, migration_v26, migration_v27, migration_v28,
+  migration_v25, migration_v26, migration_v27, migration_v28, migration_v29,
 ];
 
 /**

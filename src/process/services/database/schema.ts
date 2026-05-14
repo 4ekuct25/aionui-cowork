@@ -61,6 +61,28 @@ export function initSchema(db: ISqliteDriver): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_projects_user_created ON projects(user_id, created_at DESC)');
 
+  // Docker sessions — one per chat conversation. Tracks container/volume
+  // ownership so the control-plane can resume or clean up sessions across
+  // restarts. `status` covers the lifecycle: 'starting' | 'running' |
+  // 'paused' | 'stopped'. The conversation FK cascades — deleting a chat
+  // also drops its session row (the DockerSessionManager destroys the
+  // actual volume + container separately in JS land).
+  db.exec(`CREATE TABLE IF NOT EXISTS docker_sessions (
+    conversation_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    container_id TEXT,
+    volume_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('starting', 'running', 'paused', 'stopped')),
+    started_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_docker_sessions_user_id ON docker_sessions(user_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_docker_sessions_status ON docker_sessions(status)');
+
   // Conversations table (会话表 - 存储TChatConversation)
   db.exec(`CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
@@ -173,4 +195,4 @@ export function setDatabaseVersion(db: ISqliteDriver, version: number): void {
  * Current database schema version
  * Update this when adding new migrations in migrations.ts
  */
-export const CURRENT_DB_VERSION = 28;
+export const CURRENT_DB_VERSION = 29;
