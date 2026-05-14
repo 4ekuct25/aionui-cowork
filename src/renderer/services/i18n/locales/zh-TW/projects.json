@@ -1,0 +1,33 @@
+{
+  "pageTitle": "Projects",
+  "subtitle": "Upload a zip archive to start a session on it",
+  "empty": "You have no projects yet. Upload a zip to get started.",
+  "upload": {
+    "trigger": "Upload zip",
+    "dragHint": "Drop a .zip archive here, or click to select",
+    "uploading": "Uploading {{name}}...",
+    "success": "Uploaded {{name}}",
+    "errors": {
+      "notZip": "File must be a zip archive",
+      "oversize": "Archive exceeds the size limit",
+      "tooManyAttempts": "Too many attempts, please try again later",
+      "networkError": "Connection failed, please try again",
+      "serverError": "Server error, please try again later",
+      "unknown": "Upload failed"
+    }
+  },
+  "table": {
+    "name": "Name",
+    "size": "Size",
+    "created": "Created",
+    "actions": "Actions",
+    "export": "Download",
+    "delete": "Delete"
+  },
+  "delete": {
+    "confirmTitle": "Delete project?",
+    "confirmBody": "This permanently removes the archive and any sessions still using it.",
+    "success": "Project deleted",
+    "error": "Failed to delete project"
+  }
+}
