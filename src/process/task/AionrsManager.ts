@@ -153,8 +153,31 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
       if (teamGuide) stdioMcpServers.push(teamGuide);
     }
 
+    // Docker-backed deployment: acquire the per-conversation sandbox
+    // container before spawning aionrs so the agent runs inside it with
+    // /workspace pointing at the project volume. Falls back to the host
+    // workspace when AIONUI_PLATFORM!=docker or when the conversation has
+    // no project link (single-tenant upstream / legacy chats).
+    let containerId: string | undefined;
+    let resolvedWorkspace = mergedData.workspace;
+    if ((process.env.AIONUI_PLATFORM ?? '').trim().toLowerCase() === 'docker') {
+      try {
+        const { DockerSessionManager } = await import('@process/services/DockerSessionManager');
+        const session = await DockerSessionManager.ensureForConversation(this.conversation_id);
+        if (session) {
+          containerId = session.containerId;
+          resolvedWorkspace = '/workspace';
+        }
+      } catch (err) {
+        // Failure here means the user can't reach their project files,
+        // but the agent itself should still start so the error surfaces
+        // in the chat (rather than a silent black box).
+        console.error('[AionrsManager] DockerSessionManager.ensureForConversation failed:', err);
+      }
+    }
+
     const agent = new AionrsAgent({
-      workspace: mergedData.workspace,
+      workspace: resolvedWorkspace,
       model: mergedData.model,
       proxy: mergedData.proxy,
       yoloMode: mergedData.yoloMode,
@@ -164,6 +187,7 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
       sessionId: mergedData.sessionId,
       resume: mergedData.resume,
       stdioMcpServers,
+      containerId,
       onStreamEvent: (event) => this.emit('aionrs.message', event),
       onProcessExit: (code, activeMsgId) => this.handleProcessExit(code, activeMsgId),
       onPong: () => this.handlePong(),

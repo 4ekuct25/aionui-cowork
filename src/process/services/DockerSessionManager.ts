@@ -314,6 +314,59 @@ export const DockerSessionManager = {
     }
     return result.data ?? [];
   },
+
+  /**
+   * Resolve the session container for a conversation without re-acquiring
+   * it. Used by agent managers (e.g. AionrsManager) that already arranged
+   * the acquire on conversation open and just need the current container id
+   * when spinning up an agent process. Returns null when no session row
+   * exists yet (caller should fall back to acquire if needed).
+   *
+   * Looks up `(user_id, project_id)` from the `conversations` table so the
+   * caller doesn't have to plumb them in; FK constraints keep the join sane.
+   */
+  async resolveForConversation(conversationId: string): Promise<IDockerSession | null> {
+    const db = await getDatabase();
+    const row = db
+      .getDriver()
+      .prepare(
+        `SELECT ds.* FROM docker_sessions ds
+         INNER JOIN conversations c ON c.id = ds.conversation_id
+         WHERE ds.conversation_id = ? AND ds.status = 'running'`
+      )
+      .get(conversationId) as IDockerSession | undefined;
+    return row ?? null;
+  },
+
+  /**
+   * Idempotent acquire that resolves user_id + project_id from the
+   * `conversations` row itself. Lets agent managers ask "give me a session
+   * for this conversation" without plumbing user/project context through
+   * their constructor chain.
+   *
+   * Returns null when the conversation has no associated project — that's
+   * the legacy single-tenant case (or a malformed setup) where the caller
+   * should fall back to the host-spawn path.
+   */
+  async ensureForConversation(conversationId: string): Promise<{ containerId: string; volumeName: string } | null> {
+    const db = await getDatabase();
+    const row = db
+      .getDriver()
+      .prepare('SELECT user_id, project_id FROM conversations WHERE id = ?')
+      .get(conversationId) as { user_id: string; project_id: string | null } | undefined;
+    if (!row || !row.project_id) {
+      return null;
+    }
+    const result = await this.acquire({
+      conversationId,
+      userId: row.user_id,
+      projectId: row.project_id,
+    });
+    if (!result.session.container_id) {
+      return null;
+    }
+    return { containerId: result.session.container_id, volumeName: result.session.volume_name };
+  },
 };
 
 /**

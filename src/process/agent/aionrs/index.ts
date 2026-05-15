@@ -50,6 +50,14 @@ export type AionrsAgentOptions = {
    * future project MCPs, etc.) — AionrsAgent just forwards them.
    */
   stdioMcpServers?: StdioMcpOption[];
+  /**
+   * Optional session container ID. When set, spawnAgentProcess routes the
+   * aionrs invocation through `docker exec` into that container instead of
+   * a host-side child_process.spawn. AionrsManager populates this in the
+   * docker-backed deployment via DockerSessionManager.acquireForConversation.
+   * Leave undefined for the legacy host-spawn path (single-user upstream).
+   */
+  containerId?: string;
   onStreamEvent: StreamEventHandler;
   onProcessExit?: (code: number | null, activeMsgId: string) => void;
   onPong?: () => void;
@@ -114,8 +122,14 @@ export class AionrsAgent {
     // and AIONUI_CONTAINER_ID is set on the env; otherwise it's plain
     // child_process.spawn. binaryResolver returns the in-container path when
     // running in docker mode so binaryPath already points at the right place.
+    const spawnEnv = getEnhancedEnv(env);
+    if (this.options.containerId) {
+      // Propagate the per-conversation session container so the shim routes
+      // this exec into /workspace inside that container, not the host.
+      spawnEnv.AIONUI_CONTAINER_ID = this.options.containerId;
+    }
     this.childProcess = spawnAgentProcess(binaryPath, args, {
-      env: getEnhancedEnv(env),
+      env: spawnEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: this.options.workspace,
     }) as ChildProcess;
