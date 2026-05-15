@@ -31,6 +31,30 @@ COPY src/ ./src/
 RUN node scripts/build-server.mjs
 
 # ---------------------------------------------------------------------------
+# Stage 1b: pluck the aionrs binary out of the upstream Electron release.
+# Isolated so curl + dpkg don't pollute the runtime image, and so BuildKit
+# can cache the download independently of source changes.
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim AS aionrs-extractor
+ARG AIONUI_RELEASE=v1.9.25
+ARG TARGETARCH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates dpkg \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "$TARGETARCH" in \
+         amd64) DEB_ARCH=amd64; BIN_DIR=linux-x64 ;; \
+         arm64) DEB_ARCH=arm64; BIN_DIR=linux-arm64 ;; \
+         *) echo "Unsupported TARGETARCH=$TARGETARCH" && exit 1 ;; \
+       esac \
+    && VERSION="${AIONUI_RELEASE#v}" \
+    && curl -fsSL -o /tmp/aionui.deb \
+        "https://github.com/iOfficeAI/AionUi/releases/download/${AIONUI_RELEASE}/AionUi-${VERSION}-linux-${DEB_ARCH}.deb" \
+    && dpkg-deb -x /tmp/aionui.deb /tmp/extract \
+    && cp "/tmp/extract/opt/AionUi/resources/bundled-aionrs/${BIN_DIR}/aionrs" /aionrs \
+    && chmod +x /aionrs \
+    && rm -rf /tmp/aionui.deb /tmp/extract
+
+# ---------------------------------------------------------------------------
 # Stage 2: slim runtime that the control-plane exec's into.
 # ---------------------------------------------------------------------------
 FROM node:20-bookworm-slim
@@ -62,10 +86,11 @@ RUN groupadd --gid 10001 aionui \
     && mkdir -p /workspace /opt/aionui \
     && chown -R aionui:aionui /workspace /opt/aionui /home/aionui
 
-# aionrs binary (cross-compiled in CI, copied per-arch).
-# CI will populate ./resources/aionrs-linux-<arch>/aionrs before docker build.
-# Phase 0 placeholder: directory may not exist yet — make COPY tolerant via
-# a no-op script. This will be replaced with the real binary in Phase 5C/D.
+# aionrs binary, plucked from the upstream Electron release in the
+# extractor stage above. binaryResolver returns this exact path when
+# AIONUI_PLATFORM=docker, so renaming requires touching that resolver too.
+COPY --from=aionrs-extractor --chown=aionui:aionui /aionrs /opt/aionui/aionrs
+
 COPY resources/container-bootstrap/ /opt/aionui/bootstrap/
 RUN chmod +x /opt/aionui/bootstrap/entrypoint.sh \
     && ln -s /opt/aionui/bootstrap/entrypoint.sh /usr/local/bin/aionui-entrypoint
