@@ -100,6 +100,13 @@ RUN chmod +x /opt/aionui/bootstrap/entrypoint.sh \
 # scripts/build-server.mjs emits.
 COPY --from=builder --chown=aionui:aionui /app/dist-server /opt/aionui/dist-server
 
+# Bake popular ACP-compatible CLIs so spawnAgentProcess can `docker exec`
+# them without a lazy npm install on first use. Mirrors what's in the
+# control-plane image — AcpDetector advertises an agent only when the
+# binary is on PATH in BOTH places (control-plane for detection, runtime
+# for execution).
+RUN npm install -g @openai/codex @anthropic-ai/claude-code 2>&1 | tail -5 || true
+
 USER aionui
 WORKDIR /workspace
 

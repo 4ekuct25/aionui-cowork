@@ -50,6 +50,15 @@ COPY package.json bun.lock ./
 COPY patches/ ./patches/
 RUN bun install --production --ignore-scripts
 
+# Bake the most-used ACP CLIs into the control-plane image so AcpDetector
+# finds them on PATH at boot (it scans the control-plane host, not the
+# session container). Without these the AgentRegistry only exposes the
+# built-in Aion CLI + Gemini worker. Bloat is ~80 MB per package — worth
+# it for out-of-the-box parity with the upstream desktop experience.
+# Operators on a tight image budget can override with their own
+# Dockerfile derivation that drops this step.
+RUN npm install -g @openai/codex @anthropic-ai/claude-code 2>&1 | tail -5 || true
+
 # aionrs binary lives at the canonical path binaryResolver returns when
 # AIONUI_PLATFORM=docker. Same binary is also baked into the
 # session-runtime image — Aion CLI currently spawns on the control-plane
