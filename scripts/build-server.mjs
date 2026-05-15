@@ -94,7 +94,12 @@ const sharedConfig = {
   bundle: true,
   format: 'esm',
   tsconfig: 'tsconfig.json',
-  external: ['bun:sqlite', 'keytar', 'node-pty', 'ws'],
+  // Native bindings + their carrier modules must stay external — esbuild
+  // can't resolve `.node` files, and re-implementing them in pure JS isn't
+  // possible. dockerode pulls ssh2 → cpu-features for SSH-mode connections;
+  // we never use SSH mode (always local socket) but the import graph still
+  // touches the optional binding.
+  external: ['bun:sqlite', 'keytar', 'node-pty', 'ws', 'dockerode', 'ssh2', 'cpu-features'],
   logLevel: 'info',
 };
 
