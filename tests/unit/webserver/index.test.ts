@@ -106,6 +106,10 @@ vi.mock('@process/webserver/routes/sessionRoutes', () => ({
   registerSessionRoutes: vi.fn(),
 }));
 
+vi.mock('@process/webserver/routes/healthRoutes', () => ({
+  registerHealthRoutes: vi.fn(),
+}));
+
 vi.mock('@process/webserver/routes/apiRoutes', () => ({
   registerApiRoutes: registerApiRoutesMock,
 }));

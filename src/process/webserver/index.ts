@@ -20,6 +20,7 @@ import { registerApiRoutes } from './routes/apiRoutes';
 import { registerOidcRoutes } from './auth/oidc/oidcRoutes';
 import { registerProjectRoutes } from './routes/projectRoutes';
 import { registerSessionRoutes } from './routes/sessionRoutes';
+import { registerHealthRoutes } from './routes/healthRoutes';
 import { registerStaticRoutes, resolveRendererPath, VITE_DEV_PORT } from './routes/staticRoutes';
 import { generateQRLoginUrlDirect } from '@process/bridge/webuiQR';
 
@@ -315,9 +316,10 @@ export async function startWebServerWithInstance(port: number, allowRemote = fal
   // 注册路由 / Register routes
   registerAuthRoutes(app);
   registerOidcRoutes(app);
-  // Project and session routes MUST register before the catch-all `/api`
-  // 404 handler installed by registerApiRoutes (apiRoutes.ts:
+  // Project, session and health routes MUST register before the catch-all
+  // `/api` 404 handler installed by registerApiRoutes (apiRoutes.ts:
   // `app.use('/api', …)`).
+  registerHealthRoutes(app);
   registerProjectRoutes(app);
   registerSessionRoutes(app);
   registerApiRoutes(app);

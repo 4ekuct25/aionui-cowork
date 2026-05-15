@@ -1,46 +1,76 @@
-# aionui-cowork — local deployment stack.
+# aionui-cowork — single-VM deployment stack.
 #
-# Phase 0 scope: control-plane only. SQLite-backed; auth is single-admin from
-# upstream AionUi. Multi-tenant + OIDC + per-session containers land in later
-# phases.
+# Quick start (see DEPLOY.md for the full walkthrough):
+#   1. cp .env.example .env  &&  edit secrets
+#   2. docker compose pull   (or `docker compose build` from source)
+#   3. docker compose up -d
+#   4. open https://<host>:3000   — local signup is enabled by default;
+#      the first registered user becomes admin.
 #
-# Run:   docker compose up --build
-# Then:  open http://localhost:3000 — the admin password is printed to the
-#        control-plane logs on first start.
+# Multi-arch images are published to GHCR by the dockerize branch workflows.
+# The compose stack runs everything on one Docker daemon; per-conversation
+# sandbox containers spawn as siblings via the bind-mounted docker.sock.
 
 services:
   app:
+    # Pull the prebuilt control-plane image by default. `docker compose build`
+    # falls back to the local Dockerfile when an image rebuild is required
+    # (e.g. when iterating locally).
+    image: ${CONTROL_PLANE_IMAGE:-ghcr.io/4ekuct25/aionui-cowork-control-plane:dev}
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/4ekuct25/aionui-cowork-control-plane:dev
     container_name: aionui-cowork-app
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      ALLOW_REMOTE: "true"
+      # Hard-pin platform mode so DockerPlatformServices is wired even if the
+      # operator's .env forgets it. Anything else here is intentionally
+      # plumbed via env_file so secrets stay out of source control.
+      AIONUI_PLATFORM: docker
+      ALLOW_REMOTE: 'true'
       NODE_ENV: production
       DATA_DIR: /data
-      # Image used for per-session sandboxes — will be consumed by
-      # DockerSessionManager in Phase 3.
-      SESSION_RUNTIME_IMAGE: ghcr.io/4ekuct25/aionui-cowork-runtime:dev
+      # Image consumed by DockerSessionManager when it spins up a per-chat
+      # sandbox. Override per-deployment via .env (e.g. pin to a sha tag).
+      SESSION_RUNTIME_IMAGE: ${SESSION_RUNTIME_IMAGE:-ghcr.io/4ekuct25/aionui-cowork-runtime:dev}
     volumes:
-      # Mount the host Docker socket so the control-plane can orchestrate
-      # sibling session containers. Phase 8 will replace this with a
-      # docker-socket-proxy for least-privilege access.
+      # docker.sock lets the control-plane orchestrate sibling session
+      # containers without DinD. Phase 8.2 will swap this for
+      # docker-socket-proxy (whitelisted endpoints only).
       - /var/run/docker.sock:/var/run/docker.sock
       - app-data:/data
     ports:
-      - "3000:3000"
+      - '${APP_PORT:-3000}:3000'
+    healthcheck:
+      # The /api/health endpoint returns 200 once the SQLite probe succeeds.
+      test:
+        [
+          'CMD-SHELL',
+          'node -e "fetch(''http://127.0.0.1:3000/api/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
-  # Pre-pull / build the runtime image so DockerSessionManager finds it
-  # locally. Profile `build-only` runs this once and exits.
+  # Pre-pull the session-runtime image so DockerSessionManager finds it
+  # locally on first acquire. Run once: `docker compose --profile build-only run --rm session-runtime-puller`.
+  session-runtime-puller:
+    image: ${SESSION_RUNTIME_IMAGE:-ghcr.io/4ekuct25/aionui-cowork-runtime:dev}
+    profiles: ['build-only']
+    command: ['true']
+
+  # Local build target for the session-runtime image (multi-stage with the
+  # worker bundle). Use when iterating on Dockerfile.session-runtime locally.
   session-runtime-builder:
     build:
       context: .
       dockerfile: Dockerfile.session-runtime
-    image: ghcr.io/4ekuct25/aionui-cowork-runtime:dev
-    profiles: ["build-only"]
-    command: ["true"]
+    image: ${SESSION_RUNTIME_IMAGE:-ghcr.io/4ekuct25/aionui-cowork-runtime:dev}
+    profiles: ['build-only']
+    command: ['true']
 
 volumes:
   app-data: {}
