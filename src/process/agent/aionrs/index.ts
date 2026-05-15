@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess } from 'node:child_process';
+import { spawnAgentProcess } from '@process/agent/runtime/spawnAgentProcess';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -109,11 +110,15 @@ export class AionrsAgent {
       this.writeProjectConfig(projectConfig);
     }
 
-    this.childProcess = spawn(binaryPath, args, {
+    // spawnAgentProcess routes through docker exec when AIONUI_PLATFORM=docker
+    // and AIONUI_CONTAINER_ID is set on the env; otherwise it's plain
+    // child_process.spawn. binaryResolver returns the in-container path when
+    // running in docker mode so binaryPath already points at the right place.
+    this.childProcess = spawnAgentProcess(binaryPath, args, {
       env: getEnhancedEnv(env),
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: this.options.workspace,
-    });
+    }) as ChildProcess;
 
     // Parse stdout JSON Lines
     const rl = createInterface({ input: this.childProcess.stdout! });

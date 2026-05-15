@@ -14,12 +14,24 @@ function getBinaryName(): string {
 
 /**
  * Resolve the aionrs binary path.
+ *
  * Search order:
- *  1. Bundled with app (production)
- *  2. System PATH
+ *  1. Docker mode (AIONUI_PLATFORM=docker) — the binary lives at a fixed path
+ *     inside the session container image (/opt/aionui/aionrs). The on-host
+ *     existsSync check is intentionally skipped because we resolve a path
+ *     inside the container, not the host.
+ *  2. Bundled with app (production) — same layout as bundled-bun.
+ *  3. System PATH.
  */
 export function resolveAionrsBinary(): string | null {
-  // 1. Bundled binary (production) — same layout as bundled-bun
+  // 1. Docker platform: the runtime image will ship the binary at this path
+  // once Phase 5C lands the cross-compile step. Returning it here lets the
+  // spawn site go through dockerSpawn with the correct in-container path.
+  if ((process.env.AIONUI_PLATFORM ?? '').trim().toLowerCase() === 'docker') {
+    return process.env.AIONUI_AIONRS_PATH?.trim() || '/opt/aionui/aionrs';
+  }
+
+  // 2. Bundled binary (production) — same layout as bundled-bun
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   if (resourcesPath) {
     const runtimeKey = `${process.platform}-${process.arch}`;
@@ -27,7 +39,7 @@ export function resolveAionrsBinary(): string | null {
     if (existsSync(bundled)) return bundled;
   }
 
-  // 2. System PATH
+  // 3. System PATH
   try {
     const cmd = process.platform === 'win32' ? 'where aionrs' : 'which aionrs';
     const result = execSync(cmd, { encoding: 'utf-8', timeout: 5000 }).trim();

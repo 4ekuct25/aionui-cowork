@@ -25,12 +25,16 @@ export type ChildProcessLike = {
   stdout: Readable;
   /** Demultiplexed stderr from `docker exec`. */
   stderr: Readable;
+  /** Mirrors ChildProcess.killed — true once kill() has been called. */
+  readonly killed: boolean;
   /** Send a kill signal. Best-effort — see implementation note in kill(). */
   kill: (signal?: NodeJS.Signals | number) => boolean;
   /** Node-style event registration. Emits 'exit' (code, signal), 'error', 'close'. */
   on: (event: 'exit' | 'close' | 'error', listener: (...args: unknown[]) => void) => void;
   once: (event: 'exit' | 'close' | 'error', listener: (...args: unknown[]) => void) => void;
   off: (event: 'exit' | 'close' | 'error', listener: (...args: unknown[]) => void) => void;
+  /** Decouple stdio from parent lifecycle — no-op for docker exec but kept for API parity with ChildProcess.unref(). */
+  unref?: () => void;
 };
 
 export type DockerSpawnOptions = {
@@ -180,6 +184,12 @@ export function dockerSpawn(command: string, args: string[], options: DockerSpaw
     stdin: stdinPassthrough,
     stdout,
     stderr,
+    get killed() {
+      return killRequested || exited;
+    },
+    unref() {
+      // No-op — docker exec doesn't keep the parent event loop alive.
+    },
     kill(signal?: NodeJS.Signals | number): boolean {
       // `docker exec` doesn't expose a clean signal-delivery API through
       // dockerode (the underlying engine endpoint exists but is awkward).

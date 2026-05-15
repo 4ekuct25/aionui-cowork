@@ -11,7 +11,8 @@
  */
 
 import type { ChildProcess, SpawnOptions } from 'child_process';
-import { execFile as execFileCb, execFileSync, spawn } from 'child_process';
+import { execFile as execFileCb, execFileSync } from 'child_process';
+import { spawnAgentProcess } from '@process/agent/runtime/spawnAgentProcess';
 import { promisify } from 'util';
 import { promises as fs, rmSync } from 'fs';
 import os from 'os';
@@ -413,13 +414,16 @@ export function spawnNpxBackend(
   // would suspend the entire Electron process group and freeze the UI.
   // On Windows, prefix with chcp 65001 to switch console to UTF-8, preventing GBK garbling.
   const effectiveCommand = isWindows ? `chcp 65001 >nul && ${formatWindowsCommandForShell(npxCommand)}` : npxCommand;
-  const child = spawn(effectiveCommand, spawnArgs, {
+  // spawnAgentProcess routes through docker exec when AIONUI_PLATFORM=docker
+  // and AIONUI_CONTAINER_ID is present; otherwise it falls back to plain
+  // child_process.spawn. The cast keeps the existing SpawnResult shape.
+  const child = spawnAgentProcess(effectiveCommand, spawnArgs, {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: cleanEnv,
     shell: isWindows,
     detached,
-  });
+  }) as ChildProcess;
   // Prevent the detached child from keeping the parent alive when the parent wants to exit normally.
   if (detached) {
     child.unref();
@@ -536,10 +540,10 @@ export async function spawnGenericBackend(
   const spawnStart = Date.now();
   const detached = process.platform !== 'win32';
   const config = createGenericSpawnConfig(cliPath, workingDir, acpArgs, undefined, cleanEnv as Record<string, string>);
-  const child = spawn(config.command, config.args, {
+  const child = spawnAgentProcess(config.command, config.args, {
     ...config.options,
     detached,
-  });
+  }) as ChildProcess;
   if (detached) {
     child.unref();
   }
