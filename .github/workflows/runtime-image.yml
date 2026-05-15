@@ -3,11 +3,21 @@ name: session-runtime image
 on:
   push:
     branches: [dockerize]
+    # The runtime image now bundles dist-server (worker entry points), so
+    # any change that affects the build:server output must trigger a rebuild.
     paths:
       - "Dockerfile.session-runtime"
       - "resources/container-bootstrap/**"
       - "resources/aionrs-linux-**"
       - ".github/workflows/runtime-image.yml"
+      - "scripts/build-server.mjs"
+      - "src/server.ts"
+      - "src/process/worker/**"
+      - "src/process/agent/**"
+      - "src/common/platform/**"
+      - "package.json"
+      - "bun.lock"
+      - "patches/**"
   workflow_dispatch:
 
 jobs:

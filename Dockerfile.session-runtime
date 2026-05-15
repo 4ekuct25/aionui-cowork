@@ -6,6 +6,33 @@
 # Image arch: built multi-arch (amd64 + arm64) via buildx.
 # Published as: ghcr.io/4ekuct25/aionui-cowork-runtime:<version>
 
+# ---------------------------------------------------------------------------
+# Stage 1: build the worker bundle that DockerPlatformServices.worker.fork
+# expects to find under /opt/aionui/dist-server. We reuse the upstream
+# scripts/build-server.mjs so the worker entry points (gemini.js, …) stay
+# in sync with the control-plane build.
+# ---------------------------------------------------------------------------
+FROM oven/bun:1.3.14 AS builder
+WORKDIR /app
+
+# Cache deps separately from source so changes to src/ don't bust the install
+# layer. bun.lock is regenerated in CI when package.json changes.
+COPY package.json bun.lock ./
+COPY patches/ ./patches/
+RUN bun install --ignore-scripts
+
+# Bring in just what scripts/build-server.mjs needs — keeps the build layer
+# from churning whenever unrelated parts of the tree change.
+COPY tsconfig.json electron.vite.config.ts ./
+COPY scripts/ ./scripts/
+COPY src/ ./src/
+
+# Produce dist-server/{server.mjs,gemini.js,wasm/,skills/}.
+RUN node scripts/build-server.mjs
+
+# ---------------------------------------------------------------------------
+# Stage 2: slim runtime that the control-plane exec's into.
+# ---------------------------------------------------------------------------
 FROM node:20-bookworm-slim
 
 ARG TARGETARCH
@@ -26,7 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Bun (used by some agents and for general JS scripting)
-RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.1.38" \
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.14" \
     && ln -s /root/.bun/bin/bun /usr/local/bin/bun
 
 # Non-root user for session work
@@ -38,10 +65,15 @@ RUN groupadd --gid 10001 aionui \
 # aionrs binary (cross-compiled in CI, copied per-arch).
 # CI will populate ./resources/aionrs-linux-<arch>/aionrs before docker build.
 # Phase 0 placeholder: directory may not exist yet — make COPY tolerant via
-# a no-op script. This will be replaced with the real binary in Phase 5.
+# a no-op script. This will be replaced with the real binary in Phase 5C/D.
 COPY resources/container-bootstrap/ /opt/aionui/bootstrap/
 RUN chmod +x /opt/aionui/bootstrap/entrypoint.sh \
     && ln -s /opt/aionui/bootstrap/entrypoint.sh /usr/local/bin/aionui-entrypoint
+
+# Worker bundle from stage 1. DockerPlatformServices resolves worker paths
+# under /opt/aionui/dist-server, so the layout must match what
+# scripts/build-server.mjs emits.
+COPY --from=builder --chown=aionui:aionui /app/dist-server /opt/aionui/dist-server
 
 USER aionui
 WORKDIR /workspace
