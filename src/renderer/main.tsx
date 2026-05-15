@@ -25,6 +25,7 @@ import { createRoot } from 'react-dom/client';
 
 // Context providers
 import { AuthProvider } from './hooks/context/AuthContext';
+import { ProjectSelectionProvider } from './hooks/context/ProjectSelectionContext';
 import { ThemeProvider } from './hooks/context/ThemeContext';
 import { PreviewProvider } from './pages/conversation/Preview/context/PreviewContext';
 import { ConversationTabsProvider } from './pages/conversation/hooks/ConversationTabsContext';
@@ -91,9 +92,13 @@ const AppProviders: React.FC<PropsWithChildren> = ({ children }) =>
     AuthProvider,
     null,
     React.createElement(
-      ThemeProvider,
+      ProjectSelectionProvider,
       null,
-      React.createElement(PreviewProvider, null, React.createElement(ConversationTabsProvider, null, children))
+      React.createElement(
+        ThemeProvider,
+        null,
+        React.createElement(PreviewProvider, null, React.createElement(ConversationTabsProvider, null, children))
+      )
     )
   );
 

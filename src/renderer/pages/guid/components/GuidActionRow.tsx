@@ -6,6 +6,7 @@
 
 import { ipcBridge } from '@/common';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import ProjectPickerButton from '@/renderer/components/chat/ProjectPickerButton';
 import AcpConfigSelector from '@/renderer/components/agent/AcpConfigSelector';
 import { supportsModeSwitch, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import type { AcpSessionConfigOption } from '@/common/types/acpTypes';
@@ -268,6 +269,12 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             </span>
           </Button>
         )}
+
+        {/* Phase 4C: project picker — attaches a freshly created chat to an
+            uploaded project so the agent runs inside a session container.
+            Shown only in the WebUI flow; Electron desktop keeps using the
+            host-side `Specify workspace` button above. */}
+        {isWebUI && <ProjectPickerButton />}
 
         <div
           className={`${styles.actionConfigGroup} ${configOptionCount > 1 ? styles.actionConfigGroupWithDivider : ''}`}

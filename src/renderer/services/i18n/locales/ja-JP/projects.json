@@ -29,5 +29,12 @@
     "confirmBody": "This permanently removes the archive and any sessions still using it.",
     "success": "Project deleted",
     "error": "Failed to delete project"
+  },
+  "picker": {
+    "placeholder": "No project",
+    "tooltip": "Attach this chat to a project — the agent will run in a sandboxed container with the project mounted at /workspace.",
+    "noSandbox": "No sandbox (host)",
+    "attachSuccess": "Attached to project",
+    "attachFailed": "Failed to attach project (chat still works without sandbox)"
   }
 }

@@ -5,6 +5,7 @@
  */
 
 import { ipcBridge } from '@/common';
+import { attachConversationToProject, useProjectSelection } from '@/renderer/hooks/context/ProjectSelectionContext';
 import type { TProviderWithModel } from '@/common/config/storage';
 import type { TChatConversation } from '@/common/config/storage';
 import { buildAgentConversationParams } from '@/common/utils/buildAgentConversationParams';
@@ -115,6 +116,22 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
   } = deps;
   const sendingRef = useRef(false);
 
+  // Phase 4C: capture the currently-selected project at click time so each
+  // freshly-created conversation can be attached to a session container.
+  // Reading the context here means every agent branch below shares the same
+  // single source of truth without prop-drilling through this hook's deps.
+  const { selectedProjectId } = useProjectSelection();
+  const attachIfNeeded = useCallback(
+    async (conversationId: string): Promise<void> => {
+      if (!selectedProjectId) return;
+      const result = await attachConversationToProject(conversationId, selectedProjectId);
+      if (!result.ok) {
+        Message.warning(t('projects.picker.attachFailed'));
+      }
+    },
+    [selectedProjectId, t]
+  );
+
   const handleSend = useCallback(async () => {
     const isCustomWorkspace = !!dir;
     const finalWorkspace = dir || '';
@@ -201,6 +218,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         };
         sessionStorage.setItem(`gemini_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
 
+        await attachIfNeeded(conversation.id);
         void navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create Gemini conversation:', error);
@@ -259,6 +277,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         };
         sessionStorage.setItem(`openclaw_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
 
+        await attachIfNeeded(conversation.id);
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -309,6 +328,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         };
         sessionStorage.setItem(`nanobot_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
 
+        await attachIfNeeded(conversation.id);
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -360,6 +380,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         };
         sessionStorage.setItem(`aionrs_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
 
+        await attachIfNeeded(conversation.id);
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -460,6 +481,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         };
         sessionStorage.setItem(`acp_initial_message_${conversation.id}`, JSON.stringify(initialMessage));
 
+        await attachIfNeeded(conversation.id);
         await navigate(`/conversation/${conversation.id}`);
       } catch (error: unknown) {
         console.error('Failed to create ACP conversation:', error);
