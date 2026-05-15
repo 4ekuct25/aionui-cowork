@@ -146,4 +146,36 @@ export const DockerGcService = {
       console.warn('[DockerGc] startup sweep failed (non-fatal):', err);
     }
   },
+
+  /**
+   * Schedule the sweep on a cron expression. Caller is responsible for the
+   * lifecycle — the returned `stop()` callback unbinds the timer (used by
+   * tests; in production the scheduler lives for the process lifetime).
+   *
+   * The default expression `0 * * * *` runs hourly at the top of the hour.
+   * Operators with very volatile workloads might pick a 15-minute cadence
+   * (the "every-15-minutes" expression — escaped here so the JSDoc parser
+   * doesn't close the block early). Stable deployments can disable
+   * scheduling entirely by not setting SESSION_GC_CRON.
+   */
+  schedulePeriodic(cronExpression: string): { stop: () => void } {
+    // Lazy import so the croner dep is only loaded when actually scheduled.
+    // Avoids pulling it into single-user / Electron paths that never GC.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Cron } = require('croner') as typeof import('croner');
+    const job = new Cron(cronExpression, async () => {
+      try {
+        const summary = await this.sweep();
+        if (summary.containersRemoved || summary.volumesRemoved || summary.errors.length) {
+          console.log(
+            `[DockerGc] scheduled sweep: containers=${summary.containersRemoved} volumes=${summary.volumesRemoved} errors=${summary.errors.length}`
+          );
+          for (const e of summary.errors) console.warn(`[DockerGc] ${e}`);
+        }
+      } catch (err) {
+        console.warn('[DockerGc] scheduled sweep failed (non-fatal):', err);
+      }
+    });
+    return { stop: () => job.stop() };
+  },
 };

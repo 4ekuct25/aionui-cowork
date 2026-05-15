@@ -338,8 +338,22 @@ export async function startWebServerWithInstance(port: number, allowRemote = fal
   // single-user dev keeps the legacy path.
   if ((process.env.AIONUI_PLATFORM ?? '').trim().toLowerCase() === 'docker') {
     import('@process/services/DockerGcService')
-      .then(({ DockerGcService }) => DockerGcService.startupSweep())
-      .catch((err) => console.warn('[server] DockerGc startup sweep failed:', err));
+      .then(({ DockerGcService }) => {
+        void DockerGcService.startupSweep();
+        // Phase 9.1b: opt-in periodic sweep. SESSION_GC_CRON='0 * * * *'
+        // runs hourly; unset disables. Helps with long-running deployments
+        // where containers drift between admin actions.
+        const cron = (process.env.SESSION_GC_CRON ?? '').trim();
+        if (cron) {
+          try {
+            DockerGcService.schedulePeriodic(cron);
+            console.log(`[server] DockerGc periodic sweep scheduled: ${cron}`);
+          } catch (err) {
+            console.warn('[server] Invalid SESSION_GC_CRON, periodic sweep disabled:', err);
+          }
+        }
+      })
+      .catch((err) => console.warn('[server] DockerGc init failed:', err));
   }
 
   // 启动服务器 / Start server
