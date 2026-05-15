@@ -20,6 +20,7 @@ import { registerApiRoutes } from './routes/apiRoutes';
 import { registerOidcRoutes } from './auth/oidc/oidcRoutes';
 import { registerProjectRoutes } from './routes/projectRoutes';
 import { registerSessionRoutes } from './routes/sessionRoutes';
+import { registerSecretsRoutes } from './routes/secretsRoutes';
 import { registerHealthRoutes } from './routes/healthRoutes';
 import { registerStaticRoutes, resolveRendererPath, VITE_DEV_PORT } from './routes/staticRoutes';
 import { generateQRLoginUrlDirect } from '@process/bridge/webuiQR';
@@ -322,6 +323,7 @@ export async function startWebServerWithInstance(port: number, allowRemote = fal
   registerHealthRoutes(app);
   registerProjectRoutes(app);
   registerSessionRoutes(app);
+  registerSecretsRoutes(app);
   registerApiRoutes(app);
   registerStaticRoutes(app);
 

@@ -21,6 +21,7 @@ import type {
   IProject,
   IQueryResult,
   IUser,
+  IUserSecretRow,
   TChatConversation,
   TMessage,
   UserRole,
@@ -655,6 +656,85 @@ export class AionUIDatabase {
       return { success: true, data: rows };
     } catch (error: any) {
       return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  /**
+   * ==================
+   * User secrets (encrypted)
+   * ==================
+   */
+
+  /**
+   * Insert or replace an encrypted secret. Plaintext never reaches this layer
+   * — SecretsService hands us ciphertext + iv + auth tag.
+   */
+  upsertUserSecret(input: IUserSecretRow): IQueryResult<boolean> {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO user_secrets (user_id, key_name, ciphertext, iv, auth_tag, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, key_name) DO UPDATE SET
+             ciphertext = excluded.ciphertext,
+             iv = excluded.iv,
+             auth_tag = excluded.auth_tag,
+             updated_at = excluded.updated_at`
+        )
+        .run(
+          input.user_id,
+          input.key_name,
+          input.ciphertext,
+          input.iv,
+          input.auth_tag,
+          input.created_at,
+          input.updated_at
+        );
+      return { success: true, data: true };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: false };
+    }
+  }
+
+  /**
+   * Read a single secret for the given user. Returns null when missing.
+   */
+  getUserSecret(userId: string, keyName: string): IQueryResult<IUserSecretRow | null> {
+    try {
+      const row = this.db
+        .prepare('SELECT * FROM user_secrets WHERE user_id = ? AND key_name = ?')
+        .get(userId, keyName) as IUserSecretRow | undefined;
+      return { success: true, data: row ?? null };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: null };
+    }
+  }
+
+  /**
+   * List secret names for a user. Does NOT return ciphertext — listing must
+   * never leak material that lets an attacker probe stored values.
+   */
+  listUserSecretNames(
+    userId: string
+  ): IQueryResult<Array<{ key_name: string; created_at: number; updated_at: number }>> {
+    try {
+      const rows = this.db
+        .prepare('SELECT key_name, created_at, updated_at FROM user_secrets WHERE user_id = ? ORDER BY key_name')
+        .all(userId) as Array<{ key_name: string; created_at: number; updated_at: number }>;
+      return { success: true, data: rows };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  deleteUserSecret(userId: string, keyName: string): IQueryResult<boolean> {
+    try {
+      const result = this.db
+        .prepare('DELETE FROM user_secrets WHERE user_id = ? AND key_name = ?')
+        .run(userId, keyName);
+      return { success: true, data: result.changes > 0 };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: false };
     }
   }
 

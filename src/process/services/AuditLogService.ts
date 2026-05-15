@@ -25,7 +25,9 @@ export type AuditAction =
   | 'project.export'
   | 'session.acquire'
   | 'session.release'
-  | 'session.destroy';
+  | 'session.destroy'
+  | 'secret.store'
+  | 'secret.delete';
 
 export type AppendInput = {
   /** Caller user ID; `null` when the event is anonymous (e.g. failed login). */

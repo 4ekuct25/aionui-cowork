@@ -61,6 +61,21 @@ export interface IProject {
 export type DockerSessionStatus = 'starting' | 'running' | 'paused' | 'stopped';
 
 /**
+ * Encrypted secret blob. Plaintext never lives in this table; SecretsService
+ * does AES-256-GCM with the global KMS_KEY. The auth_tag is stored separately
+ * from the ciphertext so a corrupted row is rejected at decrypt time.
+ */
+export interface IUserSecretRow {
+  user_id: string;
+  key_name: string;
+  ciphertext: Buffer;
+  iv: Buffer;
+  auth_tag: Buffer;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
  * One append-only audit-log row. Captures security-relevant events: auth,
  * signup, project lifecycle, session lifecycle, OIDC linking, etc. Reviewed
  * by admins to retrace activity after an incident.

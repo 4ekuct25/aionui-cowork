@@ -1386,6 +1386,39 @@ const migration_v31: IMigration = {
 };
 
 /**
+ * Migration v31 -> v32: Encrypted user secrets vault.
+ *
+ * Stores per-user API keys (OpenAI / Anthropic / custom OIDC) as
+ * AES-256-GCM ciphertext. The key never leaves SecretsService; the table
+ * holds opaque blobs. PK is (user_id, key_name) so the same user can keep
+ * multiple named keys without separate rows for the same logical secret.
+ */
+const migration_v32: IMigration = {
+  version: 32,
+  name: 'Add user_secrets table',
+  up: (db) => {
+    db.exec(`CREATE TABLE IF NOT EXISTS user_secrets (
+      user_id TEXT NOT NULL,
+      key_name TEXT NOT NULL,
+      ciphertext BLOB NOT NULL,
+      iv BLOB NOT NULL,
+      auth_tag BLOB NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, key_name),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_user_secrets_user_id ON user_secrets(user_id)');
+    console.log('[Migration v32] Added user_secrets table');
+  },
+  down: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_user_secrets_user_id');
+    db.exec('DROP TABLE IF EXISTS user_secrets');
+    console.log('[Migration v32] Rolled back: removed user_secrets table');
+  },
+};
+
+/**
  * All migrations in order
  */
 // prettier-ignore
@@ -1395,7 +1428,7 @@ export const ALL_MIGRATIONS: IMigration[] = [
   migration_v13, migration_v14, migration_v15, migration_v16, migration_v17, migration_v18,
   migration_v19, migration_v20, migration_v21, migration_v22, migration_v23, migration_v24,
   migration_v25, migration_v26, migration_v27, migration_v28, migration_v29, migration_v30,
-  migration_v31,
+  migration_v31, migration_v32,
 ];
 
 /**
