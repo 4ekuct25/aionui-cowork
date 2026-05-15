@@ -367,7 +367,19 @@ export function registerApiRoutes(app: Express): void {
         // This breaks the taint chain: path.basename() strips any directory traversal sequences,
         // and MULTER_TEMP_DIR is a constant set at startup, not user-provided.
         const safeTempPath = path.join(path.resolve(MULTER_TEMP_DIR), path.basename(file.path));
-        await fsPromises.rename(safeTempPath, targetPath);
+        try {
+          await fsPromises.rename(safeTempPath, targetPath);
+        } catch (err) {
+          // In Docker, MULTER_TEMP_DIR (/tmp) and the destination (often a
+          // mounted /data volume) can live on different filesystems, which
+          // makes rename fail with EXDEV. Fall back to copy + unlink.
+          if (err && typeof err === 'object' && (err as NodeJS.ErrnoException).code === 'EXDEV') {
+            await fsPromises.copyFile(safeTempPath, targetPath);
+            await fsPromises.unlink(safeTempPath).catch(() => {});
+          } else {
+            throw err;
+          }
+        }
 
         res.json({
           success: true,
