@@ -330,6 +330,16 @@ export async function startWebServerWithInstance(port: number, allowRemote = fal
   // 配置错误处理（必须最后）/ Setup error handler (must be last)
   setupErrorHandler(app);
 
+  // Phase 9.1: prune stale containers/volumes left over from previous
+  // runs. Fire-and-forget — if the Docker daemon is slow or absent we
+  // must not block startup. Only fires when running in docker mode;
+  // single-user dev keeps the legacy path.
+  if ((process.env.AIONUI_PLATFORM ?? '').trim().toLowerCase() === 'docker') {
+    import('@process/services/DockerGcService')
+      .then(({ DockerGcService }) => DockerGcService.startupSweep())
+      .catch((err) => console.warn('[server] DockerGc startup sweep failed:', err));
+  }
+
   // 启动服务器 / Start server
   // 根据 allowRemote 决定监听地址：0.0.0.0 (所有接口) 或 127.0.0.1 (仅本地)
   // Listen on 0.0.0.0 (all interfaces) or 127.0.0.1 (local only) based on allowRemote
