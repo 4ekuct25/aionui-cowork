@@ -60,6 +60,16 @@ class Deferred {
 
 type THandler = (data: any, deferred?: Deferred) => void;
 
+/**
+ * Detect whether this worker was spawned through DockerPlatformServices.
+ * The parent sets AIONUI_TRANSPORT=docker on the exec env so the worker
+ * knows to talk NDJSON over stdin/stdout instead of using parentPort or
+ * `process.send` (neither of which exists across a docker exec boundary).
+ */
+function isDockerTransport(): boolean {
+  return (process.env.AIONUI_TRANSPORT ?? '').trim().toLowerCase() === 'docker';
+}
+
 export class Pipe {
   listener: {
     [key: string]: Array<THandler>;
@@ -81,7 +91,32 @@ export class Pipe {
         }
       };
 
-      if (process.parentPort) {
+      if (isDockerTransport()) {
+        // Docker exec transport: parent attached stdin (rw) + stdout (multiplexed).
+        // Each message is a single newline-terminated JSON object. Stick to
+        // process.stdin events rather than readline to keep the dep surface
+        // minimal — workers run inside a slim container image.
+        let buffer = '';
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (chunk: string) => {
+          buffer += chunk;
+          let newline: number;
+          while ((newline = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newline);
+            buffer = buffer.slice(newline + 1);
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              handleMessage(JSON.parse(trimmed));
+            } catch (err) {
+              console.error('Worker stdin: malformed JSON, dropped:', err);
+            }
+          }
+        });
+        // EOF on stdin = parent disconnected; exit cleanly so the container
+        // doesn't keep a zombie worker process around.
+        process.stdin.on('end', () => process.exit(0));
+      } else if (process.parentPort) {
         // Electron utility process: message is wrapped in a MessageEvent
         process.parentPort.on('message', (event) => {
           handleMessage(event.data);
@@ -137,7 +172,20 @@ export class Pipe {
       return;
     }
     const msg = { type: name, data: data, ...extPrams };
-    if (process.parentPort?.postMessage) {
+    if (isDockerTransport()) {
+      // Docker exec transport: emit one JSON line. We deliberately bypass
+      // console.* to avoid mixing log output into the protocol stream.
+      try {
+        process.stdout.write(JSON.stringify(msg) + '\n');
+      } catch (err) {
+        // EPIPE is the normal "parent went away" signal — exit instead of
+        // looping on broken pipes.
+        if ((err as NodeJS.ErrnoException)?.code === 'EPIPE') {
+          process.exit(0);
+        }
+        throw err;
+      }
+    } else if (process.parentPort?.postMessage) {
       // Electron utility process
       process.parentPort.postMessage(msg);
     } else if (process.send) {
