@@ -582,6 +582,21 @@ export class AionUIDatabase {
   }
 
   /**
+   * Set or clear the project link on a conversation. The user scope keeps a
+   * tenant from re-targeting someone else's chat. Pass `null` to detach.
+   */
+  setConversationProject(conversationId: string, userId: string, projectId: string | null): IQueryResult<boolean> {
+    try {
+      const result = this.db
+        .prepare('UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+        .run(projectId, Date.now(), conversationId, userId);
+      return { success: true, data: result.changes > 0 };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: false };
+    }
+  }
+
+  /**
    * Get user by user ID
    * 通过用户 ID 获取用户信息
    *

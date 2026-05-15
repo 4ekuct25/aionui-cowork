@@ -1322,6 +1322,37 @@ const migration_v29: IMigration = {
 };
 
 /**
+ * Migration v29 -> v30: Link conversations to projects.
+ *
+ * Adds an optional `project_id` column on conversations + index. The FK is
+ * ON DELETE SET NULL so that deleting a project leaves the chat history
+ * intact (with a dangling pointer) instead of cascading the chat away — the
+ * messages are still useful even after the underlying workspace is gone.
+ */
+const migration_v30: IMigration = {
+  version: 30,
+  name: 'Link conversations to projects',
+  up: (db) => {
+    db.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_project_id ON conversations(project_id)');
+    // SQLite does not let us add a FOREIGN KEY to an existing table without
+    // rebuilding it. The FK is encoded in initSchema for fresh DBs; existing
+    // databases get a logical link only — referential integrity is enforced
+    // at the application layer (DockerSessionManager validates ownership).
+    console.log('[Migration v30] Added conversations.project_id (FK enforced in app layer for existing DBs)');
+  },
+  down: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_conversations_project_id');
+    try {
+      db.exec('ALTER TABLE conversations DROP COLUMN project_id');
+    } catch (error) {
+      console.warn('[Migration v30] DROP COLUMN unsupported on this SQLite version:', error);
+    }
+    console.log('[Migration v30] Rolled back: removed conversations.project_id');
+  },
+};
+
+/**
  * All migrations in order
  */
 // prettier-ignore
@@ -1330,7 +1361,7 @@ export const ALL_MIGRATIONS: IMigration[] = [
   migration_v7, migration_v8, migration_v9, migration_v10, migration_v11, migration_v12,
   migration_v13, migration_v14, migration_v15, migration_v16, migration_v17, migration_v18,
   migration_v19, migration_v20, migration_v21, migration_v22, migration_v23, migration_v24,
-  migration_v25, migration_v26, migration_v27, migration_v28, migration_v29,
+  migration_v25, migration_v26, migration_v27, migration_v28, migration_v29, migration_v30,
 ];
 
 /**

@@ -116,6 +116,7 @@ export interface IPaginatedResult<T> {
 export interface IConversationRow {
   id: string;
   user_id: string;
+  project_id?: string | null; // Optional FK to projects.id (Phase 3C); null when no workspace is associated
   name: string;
   type: string;
   extra: string; // JSON string of extra data

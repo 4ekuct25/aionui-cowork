@@ -101,6 +101,11 @@ vi.mock('@process/webserver/routes/projectRoutes', () => ({
   registerProjectRoutes: vi.fn(),
 }));
 
+vi.mock('@process/webserver/routes/sessionRoutes', () => ({
+  // Session routes have their own unit suite; keep the bootstrap test inert.
+  registerSessionRoutes: vi.fn(),
+}));
+
 vi.mock('@process/webserver/routes/apiRoutes', () => ({
   registerApiRoutes: registerApiRoutesMock,
 }));
