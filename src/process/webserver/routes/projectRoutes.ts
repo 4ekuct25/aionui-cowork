@@ -9,7 +9,7 @@ import os from 'os';
 import multer from 'multer';
 import fs from 'fs';
 import { AuthMiddleware } from '@process/webserver/auth/middleware/AuthMiddleware';
-import { authenticatedActionLimiter, apiRateLimiter } from '../middleware/security';
+import { authenticatedActionLimiter, apiRateLimiter, projectUploadLimiter } from '../middleware/security';
 import { ProjectIngestService, ProjectIngestError } from '@process/services/ProjectIngestService';
 import { AuditLogService } from '@process/services/AuditLogService';
 import type { IProject } from '@process/services/database/types';
@@ -53,6 +53,9 @@ export function registerProjectRoutes(app: Express): void {
     apiRateLimiter,
     AuthMiddleware.authenticateToken,
     authenticatedActionLimiter,
+    // Per-user hourly cap (Phase 8.6) — protects disk from a single
+    // tenant flooding the uploads directory.
+    projectUploadLimiter,
     // multer v2 surfaces file-size errors via next(); intercept manually so
     // the client gets a 413 instead of falling through to the 500 handler.
     (req: Request, res: Response, next: NextFunction) => {

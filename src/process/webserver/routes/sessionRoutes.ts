@@ -6,7 +6,7 @@
 
 import type { Express, Request, Response } from 'express';
 import { AuthMiddleware } from '@process/webserver/auth/middleware/AuthMiddleware';
-import { authenticatedActionLimiter, apiRateLimiter } from '../middleware/security';
+import { authenticatedActionLimiter, apiRateLimiter, sessionLifecycleLimiter } from '../middleware/security';
 import { getDatabase } from '@process/services/database/export';
 import { DockerSessionManager, SessionProjectNotFoundError } from '@process/services/DockerSessionManager';
 import { AuditLogService } from '@process/services/AuditLogService';
@@ -59,6 +59,9 @@ export function registerSessionRoutes(app: Express): void {
     apiRateLimiter,
     AuthMiddleware.authenticateToken,
     authenticatedActionLimiter,
+    // Phase 8.6: cap container starts/stops per user/hour so a single
+    // tenant can't churn sandboxes endlessly.
+    sessionLifecycleLimiter,
     async (req: Request, res: Response) => {
       try {
         const conversationId = typeof req.body?.conversationId === 'string' ? req.body.conversationId : '';
@@ -140,6 +143,7 @@ export function registerSessionRoutes(app: Express): void {
     apiRateLimiter,
     AuthMiddleware.authenticateToken,
     authenticatedActionLimiter,
+    sessionLifecycleLimiter,
     async (req: Request, res: Response) => {
       try {
         const conversationId = String(req.params.conversation);

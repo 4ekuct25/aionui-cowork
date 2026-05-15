@@ -61,6 +61,7 @@ vi.mock('@process/webserver/middleware/security', () => ({
   authRateLimiter: ((_req, _res, next) => next()) as RequestHandler,
   authenticatedActionLimiter: ((_req, _res, next) => next()) as RequestHandler,
   apiRateLimiter: ((_req, _res, next) => next()) as RequestHandler,
+  sessionLifecycleLimiter: ((_req, _res, next) => next()) as RequestHandler,
 }));
 
 function findHandler(app: express.Express, method: 'post' | 'get' | 'delete', path: string): RequestHandler {

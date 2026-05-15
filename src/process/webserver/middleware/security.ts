@@ -70,6 +70,55 @@ export const authenticatedActionLimiter = rateLimit({
 });
 
 /**
+ * Stricter per-user rate limit for project uploads (Phase 8.6).
+ * Limits a single tenant from exhausting disk via repeated POSTs.
+ *
+ *   20 uploads / hour by default; SESSION_UPLOAD_LIMIT_PER_HOUR overrides.
+ *
+ * Keyed by req.user.id when authenticated, falls back to IP otherwise.
+ * Mounted in addition to apiRateLimiter, not in place of it.
+ */
+function parseLimitEnv(name: string, fallback: number): number {
+  const raw = Number.parseInt((process.env[name] ?? '').trim(), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+export const projectUploadLimiter = rateLimit({
+  standardHeaders: true,
+  legacyHeaders: false,
+  windowMs: 60 * 60 * 1000,
+  max: parseLimitEnv('SESSION_UPLOAD_LIMIT_PER_HOUR', 20),
+  message: {
+    success: false,
+    error: 'Upload rate limit exceeded — too many archives uploaded this hour.',
+  },
+  keyGenerator: (req: Request) =>
+    req.user?.id ? `upload:user:${req.user.id}` : `upload:ip:${req.ip || req.socket.remoteAddress || 'unknown'}`,
+});
+
+/**
+ * Per-user rate limit for session lifecycle endpoints (Phase 8.6).
+ * Each acquire/release/destroy boots or stops a Docker container, so the
+ * cost is much higher than a typical API call. Cap is set against a
+ * realistic chat-juggling pattern: a user opening many chats in quick
+ * succession.
+ *
+ *   60 lifecycle ops / hour by default; SESSION_LIFECYCLE_LIMIT_PER_HOUR overrides.
+ */
+export const sessionLifecycleLimiter = rateLimit({
+  standardHeaders: true,
+  legacyHeaders: false,
+  windowMs: 60 * 60 * 1000,
+  max: parseLimitEnv('SESSION_LIFECYCLE_LIMIT_PER_HOUR', 60),
+  message: {
+    success: false,
+    error: 'Session rate limit exceeded — too many container lifecycle calls this hour.',
+  },
+  keyGenerator: (req: Request) =>
+    req.user?.id ? `session:user:${req.user.id}` : `session:ip:${req.ip || req.socket.remoteAddress || 'unknown'}`,
+});
+
+/**
  * Attach CSRF token to response for client-side usage
  * tiny-csrf provides req.csrfToken() method to generate tokens
  *
