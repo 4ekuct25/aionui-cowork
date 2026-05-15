@@ -114,6 +114,10 @@ vi.mock('@process/webserver/routes/secretsRoutes', () => ({
   registerSecretsRoutes: vi.fn(),
 }));
 
+vi.mock('@process/webserver/routes/adminRoutes', () => ({
+  registerAdminRoutes: vi.fn(),
+}));
+
 vi.mock('@process/webserver/routes/apiRoutes', () => ({
   registerApiRoutes: registerApiRoutesMock,
 }));
