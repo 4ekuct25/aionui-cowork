@@ -13,6 +13,7 @@ import { runMigrations as executeMigrations } from './migrations';
 import { CURRENT_DB_VERSION, getDatabaseVersion, initSchema, setDatabaseVersion } from './schema';
 import type {
   DockerSessionStatus,
+  IAuditLogRow,
   IConversationRow,
   IDockerSession,
   IMessageRow,
@@ -578,6 +579,82 @@ export class AionUIDatabase {
       return { success: true, data: result.changes > 0 };
     } catch (error: any) {
       return { success: false, error: error.message, data: false };
+    }
+  }
+
+  /**
+   * ==================
+   * Audit log operations
+   * ==================
+   */
+
+  /**
+   * Append a single audit event. The action+target pair is the primary axis
+   * an admin filters on; `meta` is free-form JSON for action-specific data.
+   * `userId` is nullable so anonymous events (e.g. failed login attempts)
+   * still leave a trail.
+   */
+  appendAuditLog(input: {
+    id: string;
+    userId: string | null;
+    action: string;
+    target: string | null;
+    meta: string;
+    createdAt: number;
+  }): IQueryResult<IAuditLogRow> {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO audit_log (id, user_id, action, target, meta, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        )
+        .run(input.id, input.userId, input.action, input.target, input.meta, input.createdAt);
+      return {
+        success: true,
+        data: {
+          id: input.id,
+          user_id: input.userId,
+          action: input.action,
+          target: input.target,
+          meta: input.meta,
+          created_at: input.createdAt,
+        },
+      };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Page through audit events. When `userId` is provided we constrain to
+   * that user (admin viewing one tenant); otherwise we return all events
+   * (admin global view). Newest first — matches the index orientation.
+   */
+  listAuditLog(options: {
+    userId?: string | null;
+    action?: string | null;
+    limit: number;
+    offset: number;
+  }): IQueryResult<IAuditLogRow[]> {
+    try {
+      const filters: string[] = [];
+      const args: unknown[] = [];
+      if (options.userId !== undefined && options.userId !== null) {
+        filters.push('user_id = ?');
+        args.push(options.userId);
+      }
+      if (options.action) {
+        filters.push('action = ?');
+        args.push(options.action);
+      }
+      const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+      args.push(options.limit, options.offset);
+      const rows = this.db
+        .prepare(`SELECT * FROM audit_log ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+        .all(...args) as IAuditLogRow[];
+      return { success: true, data: rows };
+    } catch (error: any) {
+      return { success: false, error: error.message, data: [] };
     }
   }
 

@@ -61,6 +61,20 @@ export interface IProject {
 export type DockerSessionStatus = 'starting' | 'running' | 'paused' | 'stopped';
 
 /**
+ * One append-only audit-log row. Captures security-relevant events: auth,
+ * signup, project lifecycle, session lifecycle, OIDC linking, etc. Reviewed
+ * by admins to retrace activity after an incident.
+ */
+export interface IAuditLogRow {
+  id: string;
+  user_id: string | null;
+  action: string;
+  target: string | null;
+  meta: string; // JSON-encoded
+  created_at: number;
+}
+
+/**
  * Docker session row — one per chat conversation that has spun up a sandbox
  * container. The control-plane reads this to resume sessions across server
  * restarts and to drive GC of orphaned containers/volumes.

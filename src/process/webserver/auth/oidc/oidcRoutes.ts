@@ -8,6 +8,7 @@ import type { Express, Request, Response } from 'express';
 import crypto from 'crypto';
 import { AuthService } from '@process/webserver/auth/service/AuthService';
 import { UserRepository } from '@process/webserver/auth/repository/UserRepository';
+import { AuditLogService } from '@process/services/AuditLogService';
 import { AUTH_CONFIG, getCookieOptions } from '../../config/constants';
 import { authRateLimiter } from '../../middleware/security';
 import { readOidcConfig, isOidcEnabled } from './OidcConfig';
@@ -86,6 +87,12 @@ export function registerOidcRoutes(app: Express): void {
         maxAge: AUTH_CONFIG.TOKEN.COOKIE_MAX_AGE,
       });
 
+      void AuditLogService.append({
+        userId: user.id,
+        action: 'auth.oidc.login',
+        meta: { sub: profile.sub },
+      });
+
       // Browsers handle SSO redirects, so finish with a navigation back to
       // the SPA root rather than a JSON response.
       res.redirect(302, '/');
@@ -130,5 +137,10 @@ async function upsertOidcUser(
     role,
   });
   await UserRepository.linkOidcSub(created.id, profile.sub);
+  void AuditLogService.append({
+    userId: created.id,
+    action: 'auth.oidc.link',
+    meta: { sub: profile.sub },
+  });
   return { ...created, oidc_sub: profile.sub };
 }

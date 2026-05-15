@@ -9,6 +9,7 @@ import { AuthMiddleware } from '@process/webserver/auth/middleware/AuthMiddlewar
 import { authenticatedActionLimiter, apiRateLimiter } from '../middleware/security';
 import { getDatabase } from '@process/services/database/export';
 import { DockerSessionManager, SessionProjectNotFoundError } from '@process/services/DockerSessionManager';
+import { AuditLogService } from '@process/services/AuditLogService';
 import type { IDockerSession } from '@process/services/database/types';
 
 /**
@@ -84,6 +85,17 @@ export function registerSessionRoutes(app: Express): void {
         const db = await getDatabase();
         db.setConversationProject(conversationId, req.user!.id, projectId);
 
+        // Only log on cold start — warm re-acquires would fill the log with
+        // noise, and the session row's `last_seen_at` already records them.
+        if (created) {
+          void AuditLogService.append({
+            userId: req.user!.id,
+            action: 'session.acquire',
+            target: conversationId,
+            meta: { projectId },
+          });
+        }
+
         res.status(created ? 201 : 200).json({ success: true, session: toDto(session) });
       } catch (error) {
         if (error instanceof SessionProjectNotFoundError) {
@@ -145,6 +157,11 @@ export function registerSessionRoutes(app: Express): void {
         } else {
           await DockerSessionManager.release(conversationId, req.user!.id);
         }
+        void AuditLogService.append({
+          userId: req.user!.id,
+          action: destroy ? 'session.destroy' : 'session.release',
+          target: conversationId,
+        });
         res.json({ success: true });
       } catch (error) {
         console.error('Release session failed:', error);

@@ -83,6 +83,23 @@ export function initSchema(db: ISqliteDriver): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_docker_sessions_user_id ON docker_sessions(user_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_docker_sessions_status ON docker_sessions(status)');
 
+  // Audit log — append-only event trail. `user_id` is nullable because some
+  // events (e.g. failed unauthenticated login attempts) have no user. `target`
+  // is the entity the action acts upon (project id, conversation id, …).
+  // `meta` carries free-form JSON for action-specific details. We deliberately
+  // do not foreign-key user_id so deleting a user does not wipe their audit
+  // history — compliance teams expect the trail to survive account removal.
+  db.exec(`CREATE TABLE IF NOT EXISTS audit_log (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    action TEXT NOT NULL,
+    target TEXT,
+    meta TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_user_created ON audit_log(user_id, created_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action, created_at DESC)');
+
   // Conversations table (会话表 - 存储TChatConversation)
   db.exec(`CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
@@ -198,4 +215,4 @@ export function setDatabaseVersion(db: ISqliteDriver, version: number): void {
  * Current database schema version
  * Update this when adding new migrations in migrations.ts
  */
-export const CURRENT_DB_VERSION = 30;
+export const CURRENT_DB_VERSION = 31;

@@ -8,6 +8,7 @@ import type { Express, Request, Response } from 'express';
 import { AuthService } from '@process/webserver/auth/service/AuthService';
 import { AuthMiddleware } from '@process/webserver/auth/middleware/AuthMiddleware';
 import { UserRepository } from '@process/webserver/auth/repository/UserRepository';
+import { AuditLogService } from '@process/services/AuditLogService';
 import { AUTH_CONFIG, getCookieOptions } from '../config/constants';
 import { TokenUtils } from '@process/webserver/auth/middleware/TokenMiddleware';
 import { createAppError } from '../middleware/errorHandler';
@@ -132,6 +133,13 @@ export function registerAuthRoutes(app: Express): void {
       // Verify password with constant time
       const isValidPassword = await AuthService.constantTimeVerify(password, user.password_hash, true);
       if (!isValidPassword) {
+        // Anonymous user_id — failed login must still leave a trail.
+        void AuditLogService.append({
+          userId: null,
+          action: 'auth.login.failed',
+          target: username,
+          meta: { reason: 'invalid_password', ip: req.ip ?? null },
+        });
         res.status(401).json({
           success: false,
           message: 'Invalid username or password',
@@ -150,6 +158,12 @@ export function registerAuthRoutes(app: Express): void {
       res.cookie(AUTH_CONFIG.COOKIE.NAME, token, {
         ...getCookieOptions(req),
         maxAge: AUTH_CONFIG.TOKEN.COOKIE_MAX_AGE,
+      });
+
+      void AuditLogService.append({
+        userId: user.id,
+        action: 'auth.login',
+        meta: { ip: req.ip ?? null },
       });
 
       res.json({
@@ -239,6 +253,12 @@ export function registerAuthRoutes(app: Express): void {
         maxAge: AUTH_CONFIG.TOKEN.COOKIE_MAX_AGE,
       });
 
+      void AuditLogService.append({
+        userId: newUser.id,
+        action: 'auth.register',
+        meta: { role, ip: req.ip ?? null },
+      });
+
       res.status(201).json({
         success: true,
         user: {
@@ -272,6 +292,11 @@ export function registerAuthRoutes(app: Express): void {
       if (token) {
         AuthService.blacklistToken(token);
       }
+
+      void AuditLogService.append({
+        userId: req.user?.id ?? null,
+        action: 'auth.logout',
+      });
 
       res.clearCookie(AUTH_CONFIG.COOKIE.NAME);
       res.json({ success: true, message: 'Logged out successfully' });

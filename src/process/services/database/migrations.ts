@@ -1353,6 +1353,39 @@ const migration_v30: IMigration = {
 };
 
 /**
+ * Migration v30 -> v31: Append-only audit log.
+ *
+ * Captures security-relevant events (auth, signup, project upload/export/
+ * delete, session lifecycle, OIDC link). user_id is nullable so failed
+ * unauthenticated logins still leave a trail. No FK on user_id — deleting a
+ * user must not wipe their audit history; compliance reviewers expect the
+ * trail to survive account removal.
+ */
+const migration_v31: IMigration = {
+  version: 31,
+  name: 'Add audit_log table',
+  up: (db) => {
+    db.exec(`CREATE TABLE IF NOT EXISTS audit_log (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      action TEXT NOT NULL,
+      target TEXT,
+      meta TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_user_created ON audit_log(user_id, created_at DESC)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action, created_at DESC)');
+    console.log('[Migration v31] Added audit_log table');
+  },
+  down: (db) => {
+    db.exec('DROP INDEX IF EXISTS idx_audit_log_action');
+    db.exec('DROP INDEX IF EXISTS idx_audit_log_user_created');
+    db.exec('DROP TABLE IF EXISTS audit_log');
+    console.log('[Migration v31] Rolled back: removed audit_log table');
+  },
+};
+
+/**
  * All migrations in order
  */
 // prettier-ignore
@@ -1362,6 +1395,7 @@ export const ALL_MIGRATIONS: IMigration[] = [
   migration_v13, migration_v14, migration_v15, migration_v16, migration_v17, migration_v18,
   migration_v19, migration_v20, migration_v21, migration_v22, migration_v23, migration_v24,
   migration_v25, migration_v26, migration_v27, migration_v28, migration_v29, migration_v30,
+  migration_v31,
 ];
 
 /**

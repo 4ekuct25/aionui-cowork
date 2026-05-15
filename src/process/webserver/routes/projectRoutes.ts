@@ -11,6 +11,7 @@ import fs from 'fs';
 import { AuthMiddleware } from '@process/webserver/auth/middleware/AuthMiddleware';
 import { authenticatedActionLimiter, apiRateLimiter } from '../middleware/security';
 import { ProjectIngestService, ProjectIngestError } from '@process/services/ProjectIngestService';
+import { AuditLogService } from '@process/services/AuditLogService';
 import type { IProject } from '@process/services/database/types';
 
 /** Hard cap multer enforces before we even touch the file. Mirrors ProjectIngestService. */
@@ -112,11 +113,17 @@ export function registerProjectRoutes(app: Express): void {
     authenticatedActionLimiter,
     async (req: Request, res: Response) => {
       try {
-        const ok = await ProjectIngestService.deleteForUser(String(req.params.id), req.user!.id);
+        const projectId = String(req.params.id);
+        const ok = await ProjectIngestService.deleteForUser(projectId, req.user!.id);
         if (!ok) {
           res.status(404).json({ success: false, message: 'Project not found' });
           return;
         }
+        void AuditLogService.append({
+          userId: req.user!.id,
+          action: 'project.delete',
+          target: projectId,
+        });
         res.json({ success: true });
       } catch (error) {
         console.error('Delete project failed:', error);
@@ -141,6 +148,11 @@ export function registerProjectRoutes(app: Express): void {
         // stream a fresh tar of the live volume; for now it returns the
         // original upload so the round-trip is exercised end-to-end.
         const safeName = found.project.name.replace(/[^A-Za-z0-9._-]+/g, '_') || 'project';
+        void AuditLogService.append({
+          userId: req.user!.id,
+          action: 'project.export',
+          target: found.project.id,
+        });
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', `attachment; filename="${safeName}.zip"`);
         res.setHeader('Content-Length', String(found.project.size_bytes));
@@ -182,6 +194,12 @@ async function handleUpload(req: Request, res: Response): Promise<void> {
       userId: req.user!.id,
       name,
       declaredSize: file.size,
+    });
+    void AuditLogService.append({
+      userId: req.user!.id,
+      action: 'project.upload',
+      target: project.id,
+      meta: { sizeBytes: project.size_bytes, sha256: project.sha256 },
     });
     res.status(201).json({ success: true, project: toDto(project) });
   } catch (error) {
