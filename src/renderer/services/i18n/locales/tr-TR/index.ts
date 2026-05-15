@@ -20,6 +20,7 @@ import agent from './agent.json';
 import team from './team.json';
 import pet from './pet.json';
 import projects from './projects.json';
+import admin from './admin.json';
 
 export default {
   common,
@@ -43,4 +44,5 @@ export default {
   team,
   pet,
   projects,
+  admin,
 };

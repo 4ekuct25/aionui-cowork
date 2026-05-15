@@ -19,6 +19,7 @@ const ExtensionSettingsPage = React.lazy(() => import('@renderer/pages/settings/
 const LoginPage = React.lazy(() => import('@renderer/pages/login'));
 const SignupPage = React.lazy(() => import('@renderer/pages/login/SignupPage'));
 const ProjectListPage = React.lazy(() => import('@renderer/pages/projects'));
+const AdminPage = React.lazy(() => import('@renderer/pages/admin'));
 const ComponentsShowcase = React.lazy(() => import('@renderer/pages/TestShowcase'));
 const ScheduledTasksPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage'));
 const TaskDetailPage = React.lazy(() => import('@renderer/pages/cron/ScheduledTasksPage/TaskDetailPage'));
@@ -62,6 +63,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route index element={<Navigate to='/guid' replace />} />
           <Route path='/guid' element={withRouteFallback(Guid)} />
           <Route path='/projects' element={withRouteFallback(ProjectListPage)} />
+          <Route path='/admin' element={withRouteFallback(AdminPage)} />
           <Route path='/conversation/:id' element={withRouteFallback(Conversation)} />
           <Route path='/settings/aionrs' element={withRouteFallback(AionrsSettings)} />
           <Route

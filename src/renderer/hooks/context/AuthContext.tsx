@@ -7,6 +7,8 @@ type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated';
 export interface AuthUser {
   id: string;
   username: string;
+  /** 'admin' grants access to /admin and the admin REST endpoints (Phase 10). */
+  role?: 'admin' | 'user';
 }
 
 interface LoginParams {

@@ -1,0 +1,48 @@
+{
+  "pageTitle": "Admin",
+  "forbidden": "Admin access required",
+  "tabs": {
+    "users": "Users",
+    "auditLog": "Audit log",
+    "sessions": "Active sessions"
+  },
+  "users": {
+    "id": "User ID",
+    "username": "Username",
+    "email": "Email",
+    "role": "Role",
+    "lastLogin": "Last login",
+    "createdAt": "Created",
+    "oidc": "OIDC linked",
+    "yes": "yes",
+    "no": "no",
+    "never": "never"
+  },
+  "audit": {
+    "id": "Event ID",
+    "userId": "User",
+    "action": "Action",
+    "target": "Target",
+    "meta": "Details",
+    "createdAt": "Time",
+    "filterUserId": "Filter by user ID",
+    "filterAction": "Filter by action",
+    "anonymous": "(anonymous)"
+  },
+  "sessions": {
+    "conversationId": "Conversation",
+    "userId": "User",
+    "projectId": "Project",
+    "status": "Status",
+    "startedAt": "Started",
+    "lastSeenAt": "Last seen",
+    "killBtn": "Kill",
+    "killConfirmTitle": "Force-stop this session?",
+    "killConfirmBody": "The container and volume will be removed. Any unsaved work inside the sandbox is lost.",
+    "killSuccess": "Session destroyed",
+    "killError": "Failed to destroy session"
+  },
+  "errors": {
+    "loadFailed": "Failed to load data"
+  }
+}

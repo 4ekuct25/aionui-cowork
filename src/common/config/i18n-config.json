@@ -23,6 +23,7 @@
     "agent",
     "team",
     "pet",
-    "projects"
+    "projects",
+    "admin"
   ]
 }
