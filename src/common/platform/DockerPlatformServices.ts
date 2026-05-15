@@ -256,9 +256,13 @@ export class DockerPlatformServices implements IPlatformServices {
       const env = { ...(opts.env ?? {}) };
       const containerId = env[ENV_CONTAINER_ID];
       if (!containerId) {
-        throw new Error(
-          `DockerPlatformServices.worker.fork requires ${ENV_CONTAINER_ID} in opts.env (caller must pre-resolve the session container)`
-        );
+        // Auto-fork pathways (e.g. ForkTask.init() running in a constructor)
+        // can't resolve a session container synchronously. Fall back to the
+        // host-side child_process.fork so the worker still launches, and let
+        // an explicit caller upgrade it later when it has a container id
+        // (Phase 4B.2 will route Gemini workers through this branch once an
+        // async lookup hook is wired into ForkTask).
+        return this.node.worker.fork(modulePath, args, opts);
       }
 
       // Path inside the container where dist-server bundle is mounted. The

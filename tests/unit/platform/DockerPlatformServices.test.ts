@@ -40,10 +40,16 @@ describe('DockerPlatformServices.worker.fork', () => {
     __setDockerForPlatformTests(null);
   });
 
-  it('throws synchronously when AIONUI_CONTAINER_ID is missing from opts.env', async () => {
+  it('falls back to host child_process.fork when AIONUI_CONTAINER_ID is missing from opts.env', async () => {
+    // Auto-fork pathways (e.g. ForkTask.init() inside a constructor) can't
+    // resolve a session container synchronously. Without a fallback every
+    // such worker would crash on boot — instead the docker implementation
+    // delegates to NodePlatformServices.worker.fork so the worker still
+    // launches (just without container isolation, until Phase 4B.2 lands
+    // an async resolver hook).
     const { DockerPlatformServices } = await import('@/common/platform/DockerPlatformServices');
     const platform = new DockerPlatformServices();
-    expect(() => platform.worker.fork('worker.js', [], { env: {} })).toThrow(/AIONUI_CONTAINER_ID/);
+    expect(() => platform.worker.fork('worker.js', [], { env: {} })).not.toThrow();
   });
 
   it('starts a docker exec with the requested command and AIONUI_TRANSPORT=docker', async () => {
