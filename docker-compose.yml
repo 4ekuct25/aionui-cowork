@@ -35,11 +35,17 @@ services:
       # Image consumed by DockerSessionManager when it spins up a per-chat
       # sandbox. Override per-deployment via .env (e.g. pin to a sha tag).
       SESSION_RUNTIME_IMAGE: ${SESSION_RUNTIME_IMAGE:-ghcr.io/4ekuct25/aionui-cowork-runtime:dev}
+      # dockerode reads DOCKER_HOST automatically via our parseDockerHost
+      # helper. Pointing at the proxy keeps the control-plane off the raw
+      # socket — see the `docker-proxy` service below.
+      DOCKER_HOST: tcp://docker-proxy:2375
+    depends_on:
+      docker-proxy:
+        condition: service_started
     volumes:
-      # docker.sock lets the control-plane orchestrate sibling session
-      # containers without DinD. Phase 8.2 will swap this for
-      # docker-socket-proxy (whitelisted endpoints only).
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Phase 8.2: app no longer touches /var/run/docker.sock directly.
+      # It talks to the tecnativa/docker-socket-proxy service over the
+      # internal compose network with a narrow API whitelist instead.
       - app-data:/data
     ports:
       - '${APP_PORT:-3000}:3000'
@@ -71,6 +77,51 @@ services:
     image: ${SESSION_RUNTIME_IMAGE:-ghcr.io/4ekuct25/aionui-cowork-runtime:dev}
     profiles: ['build-only']
     command: ['true']
+
+  # docker-socket-proxy — Phase 8.2 hardening. Sits between the
+  # control-plane and the host Docker daemon and exposes ONLY the API
+  # endpoints we actually need (containers / exec / volumes / images).
+  # If the control-plane ever gets a foothold (RCE, supply-chain attack,
+  # etc.) the blast radius is bounded by this allowlist — no
+  # `/networks/create --privileged`, no `/swarm`, no `/secrets`.
+  docker-proxy:
+    image: ghcr.io/tecnativa/docker-socket-proxy:0.3.0
+    container_name: aionui-cowork-docker-proxy
+    restart: unless-stopped
+    environment:
+      # Required for DockerSessionManager: lifecycle, exec, volume mounting,
+      # image existence checks. POST=1 is needed because containers/volumes
+      # have to be created, not just inspected.
+      CONTAINERS: 1
+      EXEC: 1
+      VOLUMES: 1
+      IMAGES: 1
+      POST: 1
+      # Refuse anything we don't use — defence in depth.
+      AUTH: 0
+      BUILD: 0
+      COMMIT: 0
+      CONFIGS: 0
+      DISTRIBUTION: 0
+      EVENTS: 1
+      INFO: 1
+      NETWORKS: 0
+      NODES: 0
+      PING: 1
+      PLUGINS: 0
+      SECRETS: 0
+      SERVICES: 0
+      SESSION: 0
+      SWARM: 0
+      SYSTEM: 0
+      TASKS: 0
+      VERSION: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Only reachable on the compose-internal network — never exposed to
+    # the host's external interfaces.
+    expose:
+      - '2375'
 
 volumes:
   app-data: {}

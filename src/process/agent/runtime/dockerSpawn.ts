@@ -50,11 +50,28 @@ export type DockerSpawnOptions = {
 
 /**
  * Singleton handle so all dockerSpawn calls share one keep-alive agent.
+ * Honours DOCKER_HOST so the control-plane can go through
+ * tecnativa/docker-socket-proxy (Phase 8.2) instead of /var/run/docker.sock.
  */
+function parseDockerHost(env: string | undefined): import('dockerode').DockerOptions | null {
+  if (!env) return null;
+  try {
+    const url = new URL(env);
+    if (url.protocol === 'unix:') return { socketPath: url.pathname };
+    if (url.protocol === 'tcp:' || url.protocol === 'http:' || url.protocol === 'https:') {
+      const port = Number(url.port) || (url.protocol === 'https:' ? 2376 : 2375);
+      return { host: url.hostname, port, protocol: url.protocol === 'https:' ? 'https' : 'http' };
+    }
+  } catch {
+    // ignore — fall through to the dockerode default
+  }
+  return null;
+}
+
 let _docker: Docker | null = null;
 function getDocker(): Docker {
   if (!_docker) {
-    _docker = new Docker();
+    _docker = new Docker(parseDockerHost(process.env.DOCKER_HOST) ?? undefined);
   }
   return _docker;
 }

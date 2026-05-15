@@ -105,11 +105,41 @@ export class SessionProjectNotFoundError extends Error {
 /**
  * Per-process Docker handle. We keep one instance so dockerode's underlying
  * keep-alive agent is reused across calls.
+ *
+ * Connection target:
+ *   - DOCKER_HOST=tcp://host:port — Phase 8.2 hardening path. The compose
+ *     stack puts `tecnativa/docker-socket-proxy` in front of the real
+ *     /var/run/docker.sock so the control-plane never gets root-equivalent
+ *     access; it only sees the whitelisted endpoints
+ *     (containers/exec/volumes/images) the proxy exposes.
+ *   - Unset → dockerode defaults to /var/run/docker.sock (single-user dev).
  */
+function parseDockerHost(env: string | undefined): DockerOptions | null {
+  if (!env) return null;
+  try {
+    const url = new URL(env);
+    if (url.protocol === 'unix:') {
+      return { socketPath: url.pathname };
+    }
+    if (url.protocol === 'tcp:' || url.protocol === 'http:' || url.protocol === 'https:') {
+      const port = Number(url.port) || (url.protocol === 'https:' ? 2376 : 2375);
+      return {
+        host: url.hostname,
+        port,
+        protocol: url.protocol === 'https:' ? 'https' : 'http',
+      };
+    }
+  } catch {
+    // ignore — fall through to "let dockerode pick default"
+  }
+  return null;
+}
+
 let _docker: Docker | null = null;
 function getDocker(options?: DockerOptions): Docker {
   if (!_docker) {
-    _docker = new Docker(options);
+    const fromEnv = options ? null : parseDockerHost(process.env.DOCKER_HOST);
+    _docker = new Docker(options ?? fromEnv ?? undefined);
   }
   return _docker;
 }

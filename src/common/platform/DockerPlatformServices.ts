@@ -214,11 +214,30 @@ class DockerWorkerProcess implements IWorkerProcess {
  * Singleton Docker handle reused across all worker.fork calls in this
  * process. dockerode keeps an internal keep-alive agent so a single
  * instance is cheaper than re-creating one each time.
+ *
+ * Honours DOCKER_HOST (Phase 8.2 hardening) so the control-plane can sit
+ * behind tecnativa/docker-socket-proxy instead of touching the raw
+ * /var/run/docker.sock.
  */
+function parseDockerHost(env: string | undefined): import('dockerode').DockerOptions | null {
+  if (!env) return null;
+  try {
+    const url = new URL(env);
+    if (url.protocol === 'unix:') return { socketPath: url.pathname };
+    if (url.protocol === 'tcp:' || url.protocol === 'http:' || url.protocol === 'https:') {
+      const port = Number(url.port) || (url.protocol === 'https:' ? 2376 : 2375);
+      return { host: url.hostname, port, protocol: url.protocol === 'https:' ? 'https' : 'http' };
+    }
+  } catch {
+    // ignore — let dockerode default to /var/run/docker.sock
+  }
+  return null;
+}
+
 let _dockerSingleton: Docker | null = null;
 function getDocker(): Docker {
   if (!_dockerSingleton) {
-    _dockerSingleton = new Docker();
+    _dockerSingleton = new Docker(parseDockerHost(process.env.DOCKER_HOST) ?? undefined);
   }
   return _dockerSingleton;
 }
