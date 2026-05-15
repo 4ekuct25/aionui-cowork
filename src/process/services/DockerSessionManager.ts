@@ -55,6 +55,38 @@ function envInt(name: string, fallback?: number): number | undefined {
  *    Dockerfile.session-runtime.
  *  - PidsLimit — caps fork bombs.
  */
+/**
+ * Build the base env passed to every session container. The main use today
+ * is propagating an operator-supplied egress proxy (Phase 8.3) so the
+ * sandbox can only reach allowlisted hosts (LLM providers, GitHub, npm).
+ * Any agent CLI inside the container that respects HTTPS_PROXY picks this
+ * up automatically — node fetch, curl, python requests, npm, pip, etc.
+ *
+ * Operator configures via .env:
+ *   SESSION_EGRESS_PROXY=http://squid:3128
+ *   SESSION_EGRESS_NO_PROXY=localhost,127.0.0.1,api.anthropic.com
+ *
+ * Leaving SESSION_EGRESS_PROXY unset disables filtering — useful for local
+ * dev where the operator hasn't stood up a proxy yet.
+ */
+function buildSessionEnv(): string[] {
+  const proxy = (process.env.SESSION_EGRESS_PROXY ?? '').trim();
+  if (!proxy) return [];
+  // NO_PROXY defaults cover container-internal addressing so DNS lookups
+  // for sibling containers (`docker-proxy`, future helpers) don't get
+  // bounced into the egress filter.
+  const noProxy = (process.env.SESSION_EGRESS_NO_PROXY ?? 'localhost,127.0.0.1,::1').trim();
+  return [
+    `HTTPS_PROXY=${proxy}`,
+    `HTTP_PROXY=${proxy}`,
+    // Some tooling reads the lowercase form instead.
+    `https_proxy=${proxy}`,
+    `http_proxy=${proxy}`,
+    `NO_PROXY=${noProxy}`,
+    `no_proxy=${noProxy}`,
+  ];
+}
+
 function buildSessionHostConfig(volumeName: string): Docker.HostConfig {
   // Default 1 GiB memory / 0.5 CPU shares / 512 pids. Tunable via env.
   const memBytes = envInt('SESSION_MEMORY_BYTES', 1024 * 1024 * 1024);
@@ -255,6 +287,13 @@ export const DockerSessionManager = {
       // able to escalate; matching the image's USER directive keeps the
       // chain consistent end-to-end.
       User: '10001:10001',
+      // Phase 8.3: route everything in the sandbox through the operator-
+      // supplied egress proxy when SESSION_EGRESS_PROXY is set. Apps
+      // that honour the HTTPS_PROXY/NO_PROXY convention (curl, fetch,
+      // node, python, most CLIs) pick this up automatically. NO_PROXY
+      // covers loopback + docker-internal DNS so health probes inside
+      // the container don't try to traverse the filter.
+      Env: buildSessionEnv(),
       Labels: {
         [LABEL_MANAGED]: 'true',
         [LABEL_USER]: userId,
