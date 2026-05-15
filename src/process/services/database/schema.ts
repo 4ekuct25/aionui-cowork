@@ -24,10 +24,12 @@ export function initSchema(db: ISqliteDriver): void {
     // Continue with default journal mode if WAL fails
   }
 
-  // Users table (账户系统)
-  // role: 'admin' | 'user' — controls access to admin-only endpoints
-  // oidc_sub: stable subject identifier from external OIDC provider (Keycloak),
-  //           NULL for local-password users; populated on first OIDC login.
+  // Users table (账户系统). The fork added `role` + `oidc_sub` in migration
+  // v27; on a *fresh* database those columns also need to exist immediately
+  // because subsequent objects (projects, docker_sessions) reference users.
+  // Migrations operate on top of this base table — they are guarded by
+  // `getDatabaseVersion < CURRENT_DB_VERSION` so they only run for older
+  // databases that lack the fork additions.
   db.exec(`CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
@@ -35,76 +37,17 @@ export function initSchema(db: ISqliteDriver): void {
     password_hash TEXT NOT NULL,
     avatar_path TEXT,
     jwt_secret TEXT,
-    role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'user')),
-    oidc_sub TEXT UNIQUE,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     last_login INTEGER
   )`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
-
-  // Projects table — uploaded zip archives owned by a single user. Each row
-  // points at one zip file under <DATA_DIR>/uploads/. Sessions later mount
-  // the archive into per-conversation Docker volumes.
-  db.exec(`CREATE TABLE IF NOT EXISTS projects (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    storage_key TEXT NOT NULL,
-    size_bytes INTEGER NOT NULL,
-    sha256 TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  )`);
-  db.exec('CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_projects_user_created ON projects(user_id, created_at DESC)');
-
-  // Docker sessions — one per chat conversation. Tracks container/volume
-  // ownership so the control-plane can resume or clean up sessions across
-  // restarts. `status` covers the lifecycle: 'starting' | 'running' |
-  // 'paused' | 'stopped'. The conversation FK cascades — deleting a chat
-  // also drops its session row (the DockerSessionManager destroys the
-  // actual volume + container separately in JS land).
-  db.exec(`CREATE TABLE IF NOT EXISTS docker_sessions (
-    conversation_id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    project_id TEXT NOT NULL,
-    container_id TEXT,
-    volume_name TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('starting', 'running', 'paused', 'stopped')),
-    started_at INTEGER NOT NULL,
-    last_seen_at INTEGER NOT NULL,
-    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-  )`);
-  db.exec('CREATE INDEX IF NOT EXISTS idx_docker_sessions_user_id ON docker_sessions(user_id)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_docker_sessions_status ON docker_sessions(status)');
-
-  // Audit log — append-only event trail. `user_id` is nullable because some
-  // events (e.g. failed unauthenticated login attempts) have no user. `target`
-  // is the entity the action acts upon (project id, conversation id, …).
-  // `meta` carries free-form JSON for action-specific details. We deliberately
-  // do not foreign-key user_id so deleting a user does not wipe their audit
-  // history — compliance teams expect the trail to survive account removal.
-  db.exec(`CREATE TABLE IF NOT EXISTS audit_log (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    action TEXT NOT NULL,
-    target TEXT,
-    meta TEXT NOT NULL DEFAULT '{}',
-    created_at INTEGER NOT NULL
-  )`);
-  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_user_created ON audit_log(user_id, created_at DESC)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action, created_at DESC)');
 
   // Conversations table (会话表 - 存储TChatConversation)
   db.exec(`CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
-    project_id TEXT,
     name TEXT NOT NULL,
     type TEXT NOT NULL,
     extra TEXT NOT NULL,
@@ -112,10 +55,8 @@ export function initSchema(db: ISqliteDriver): void {
     status TEXT CHECK(status IN ('pending', 'running', 'finished')),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`);
-  db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_project_id ON conversations(project_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_type ON conversations(type)');
