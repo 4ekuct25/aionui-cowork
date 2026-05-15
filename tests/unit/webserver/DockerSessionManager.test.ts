@@ -140,11 +140,20 @@ describe('DockerSessionManager.acquire', () => {
     const helperArgs = docker.run.mock.calls[0];
     expect(helperArgs[1]).toEqual(['sh', '-c', expect.stringContaining('unzip -q -o /in/p1.zip -d /workspace')]);
 
-    // Session container started with sleep infinity + volume bind.
+    // Session container started with sleep infinity + volume bind plus the
+    // Phase 8.1 hardening: non-root user, read-only rootfs + tmpfs, dropped
+    // caps, no-new-privileges, and explicit resource limits.
     expect(docker.createContainer).toHaveBeenCalledOnce();
     const containerArgs = docker.createContainer.mock.calls[0][0];
     expect(containerArgs.Cmd).toEqual(['sleep', 'infinity']);
+    expect(containerArgs.User).toBe('10001:10001');
     expect(containerArgs.HostConfig.Binds).toContain('aionui-u1-c1:/workspace');
+    expect(containerArgs.HostConfig.ReadonlyRootfs).toBe(true);
+    expect(containerArgs.HostConfig.Tmpfs).toMatchObject({ '/tmp': expect.any(String) });
+    expect(containerArgs.HostConfig.CapDrop).toEqual(['ALL']);
+    expect(containerArgs.HostConfig.SecurityOpt).toContain('no-new-privileges:true');
+    expect(containerArgs.HostConfig.Memory).toBeGreaterThan(0);
+    expect(containerArgs.HostConfig.PidsLimit).toBeGreaterThan(0);
     expect(docker._containerStub.start).toHaveBeenCalledOnce();
 
     // Two upserts: starting then running.

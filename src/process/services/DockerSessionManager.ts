@@ -27,6 +27,58 @@ const LABEL_CONVERSATION = 'aionui.conversation';
 const LABEL_PROJECT = 'aionui.project';
 const LABEL_MANAGED = 'aionui.managed';
 
+/**
+ * Read a positive integer from env, falling back to `fallback`. Returns
+ * `undefined` when the env var is absent/zero so dockerode treats the field
+ * as "unset" rather than "explicit 0" — `Memory: 0` means *unlimited*.
+ */
+function envInt(name: string, fallback?: number): number | undefined {
+  const raw = (process.env[name] ?? '').trim();
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+/**
+ * Build the hardened HostConfig applied to every session container.
+ * Sensible defaults out of the box; each cap can be tuned per-deployment via
+ * env to match the host's capacity.
+ *
+ * Notes on the defaults:
+ *  - read-only rootfs + tmpfs(/tmp) — keep the filesystem inside the
+ *    container immutable except for /workspace (where the project lives)
+ *    and /tmp (where many CLIs cache).
+ *  - cap-drop ALL — agents don't need raw network or kernel privileges.
+ *  - no-new-privileges — defence-in-depth against setuid binaries.
+ *  - User 10001:10001 — matches the `aionui` user baked into
+ *    Dockerfile.session-runtime.
+ *  - PidsLimit — caps fork bombs.
+ */
+function buildSessionHostConfig(volumeName: string): Docker.HostConfig {
+  // Default 1 GiB memory / 0.5 CPU shares / 512 pids. Tunable via env.
+  const memBytes = envInt('SESSION_MEMORY_BYTES', 1024 * 1024 * 1024);
+  const cpuShares = envInt('SESSION_CPU_SHARES', 512);
+  const pidsLimit = envInt('SESSION_PIDS_LIMIT', 512);
+
+  return {
+    Binds: [`${volumeName}:/workspace`],
+    AutoRemove: false,
+    ReadonlyRootfs: true,
+    // Mount a writable tmpfs for /tmp + /home/aionui/.cache so npm/pip/bun
+    // can write metadata without breaking the read-only rootfs guarantee.
+    Tmpfs: {
+      '/tmp': 'rw,nosuid,nodev,size=512m',
+      '/home/aionui/.cache': 'rw,nosuid,nodev,size=256m',
+    },
+    CapDrop: ['ALL'],
+    SecurityOpt: ['no-new-privileges:true'],
+    Memory: memBytes,
+    CpuShares: cpuShares,
+    PidsLimit: pidsLimit,
+  };
+}
+
 export type AcquireInput = {
   conversationId: string;
   userId: string;
@@ -162,10 +214,17 @@ export const DockerSessionManager = {
     });
 
     // 3. Start the long-lived session container. Cmd is sleep infinity so
-    // it stays up; agent processes attach via `docker exec` later.
+    // it stays up; agent processes attach via `docker exec` later. The
+    // HostConfig builder applies the hardening defaults (read-only rootfs,
+    // capability drops, resource caps) — see buildSessionHostConfig.
     const container = await docker.createContainer({
       Image: SESSION_RUNTIME_IMAGE,
       Cmd: ['sleep', 'infinity'],
+      // Run as the non-root `aionui` user baked into the runtime image.
+      // SecurityOpt='no-new-privileges' relies on the process never being
+      // able to escalate; matching the image's USER directive keeps the
+      // chain consistent end-to-end.
+      User: '10001:10001',
       Labels: {
         [LABEL_MANAGED]: 'true',
         [LABEL_USER]: userId,
@@ -173,10 +232,7 @@ export const DockerSessionManager = {
         [LABEL_PROJECT]: projectId,
       },
       WorkingDir: '/workspace',
-      HostConfig: {
-        Binds: [`${volumeName}:/workspace`],
-        AutoRemove: false,
-      },
+      HostConfig: buildSessionHostConfig(volumeName),
     });
     await container.start();
 
