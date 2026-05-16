@@ -74,6 +74,7 @@ export class AionrsAgent {
   private _onPong: AionrsAgentOptions['onPong'];
   private options: AionrsAgentOptions;
   private activeMsgId: string | null = null;
+  private exitExpected = false;
   private configBackup: { path: string; content: string | null } | null = null;
   private mcpReadyPromise: Promise<void>;
   private mcpReadyResolve!: () => void;
@@ -156,11 +157,12 @@ export class AionrsAgent {
       if (!this.ready) {
         this.readyReject(new Error(`aionrs exited with code ${code} during init`));
       }
-      if (this.activeMsgId && this._onProcessExit) {
+      if (this.activeMsgId && this._onProcessExit && !this.exitExpected) {
         this._onProcessExit(code, this.activeMsgId);
       }
       this.activeMsgId = null;
       this.childProcess = null;
+      this.exitExpected = false;
     });
 
     // Wait for ready event with timeout
@@ -401,6 +403,7 @@ export class AionrsAgent {
 
   async send(content: string, msgId: string, files?: string[]): Promise<void> {
     await this.readyPromise;
+    this.exitExpected = false;
     this.sendCommand({
       type: 'message',
       msg_id: msgId,
@@ -415,6 +418,7 @@ export class AionrsAgent {
   }
 
   stop(): void {
+    this.exitExpected = true;
     this.sendCommand({ type: 'stop' });
   }
 
@@ -442,7 +446,11 @@ export class AionrsAgent {
     return this.childProcess !== null;
   }
 
-  kill(): void {
+  kill(options?: { expected?: boolean }): void {
+    if (options?.expected) {
+      this.exitExpected = true;
+      this.activeMsgId = null;
+    }
     this.restoreProjectConfig();
     if (this.childProcess) {
       this.childProcess.kill('SIGTERM');

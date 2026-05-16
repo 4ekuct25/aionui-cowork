@@ -20,6 +20,7 @@ const AGENT_IDLE_CHECK_INTERVAL_MS = 1 * 60 * 1000;
 
 export class WorkerTaskManager implements IWorkerTaskManager {
   private taskList: Array<{ id: string; task: IAgentManager }> = [];
+  private pendingBuilds = new Map<string, Promise<IAgentManager>>();
   private idleCheckTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
@@ -63,12 +64,30 @@ export class WorkerTaskManager implements IWorkerTaskManager {
     if (!options?.skipCache) {
       const existing = this.getTask(id);
       if (existing) return existing;
+
+      const pending = this.pendingBuilds.get(id);
+      if (pending) return pending;
     }
 
-    const conversation = await this.repo.getConversation(id);
-    if (conversation) return this._buildAndCache(conversation, options);
+    const build = (async () => {
+      const conversation = await this.repo.getConversation(id);
+      if (conversation) return this._buildAndCache(conversation, options);
 
-    throw new Error(`Conversation not found: ${id}`);
+      throw new Error(`Conversation not found: ${id}`);
+    })();
+
+    if (options?.skipCache) {
+      return build;
+    }
+
+    this.pendingBuilds.set(id, build);
+    try {
+      return await build;
+    } finally {
+      if (this.pendingBuilds.get(id) === build) {
+        this.pendingBuilds.delete(id);
+      }
+    }
   }
 
   private _buildAndCache(conversation: TChatConversation, options?: BuildConversationOptions): IAgentManager {

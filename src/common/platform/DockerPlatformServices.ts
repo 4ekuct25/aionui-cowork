@@ -272,7 +272,7 @@ export class DockerPlatformServices implements IPlatformServices {
       args: string[],
       opts: { cwd?: string; env?: Record<string, string> }
     ): IWorkerProcess => {
-      const env = { ...(opts.env ?? {}) };
+      const env = { ...opts.env };
       const containerId = env[ENV_CONTAINER_ID];
       if (!containerId) {
         // Auto-fork pathways (e.g. ForkTask.init() running in a constructor)

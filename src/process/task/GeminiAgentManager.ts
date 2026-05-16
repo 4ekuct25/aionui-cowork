@@ -191,7 +191,7 @@ export class GeminiAgentManager extends BaseAgentManager<
     });
   }
 
-   /**
+  /**
    * Create bootstrap promise that initializes the worker with current config.
    * Extracted to allow re-bootstrapping when MCP config changes.
    */

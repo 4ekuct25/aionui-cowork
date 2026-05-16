@@ -20,7 +20,7 @@ import { addMessage, addOrUpdateMessage } from '@process/utils/message';
 import { uuid } from '@/common/utils';
 import BaseAgentManager from './BaseAgentManager';
 import { IpcAgentEventEmitter } from './IpcAgentEventEmitter';
-import { mainError, mainLog, mainWarn } from '@process/utils/mainLogger';
+import { mainError, mainLog } from '@process/utils/mainLogger';
 import { hasCronCommands } from './CronCommandDetector';
 import { processCronInMessage } from './MessageMiddleware';
 import { extractAndStripThinkTags } from './ThinkTagDetector';
@@ -87,6 +87,7 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
   private _messageSentAt: number | null = null;
   private currentMsgId: string | null = null;
   private currentMsgContent: string = '';
+  private stopRequested = false;
 
   // Heartbeat state
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
@@ -238,13 +239,36 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
   }
 
   async stop() {
+    this.stopRequested = true;
     this.stopHeartbeat();
     this.flushAllBufferedStreamTexts();
     cronBusyGuard.setProcessing(this.conversation_id, false);
     this.confirmations = [];
+    this.status = 'finished';
+    this._messageSentAt = null;
+    void this.handleTurnEnd();
     if (this.agent) {
       this.agent.stop();
     }
+  }
+
+  private async ensureAgentReadyForSend(): Promise<void> {
+    if (this.stopRequested && this.agent) {
+      this.agent.kill({ expected: true });
+      this.agent = null;
+      this.stopHeartbeat();
+    }
+    this.stopRequested = false;
+
+    if (!this.agent || this.agent.isAlive === false) {
+      this.stopHeartbeat();
+      this.agentReady = this.start().catch((err) => {
+        this.agent = null;
+        mainError('[AionrsManager]', 'Agent bootstrap failed:', err);
+      });
+    }
+
+    await this.agentReady;
   }
 
   async sendMessage(data: { content: string; msg_id: string; files?: string[] }) {
@@ -265,7 +289,7 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
     this.status = 'pending';
     this._lastActivityAt = Date.now();
     // Wait for agent bootstrap to complete before sending
-    await this.agentReady;
+    await this.ensureAgentReadyForSend();
     this._messageSentAt = Date.now();
     mainLog('[AionrsManager]', `message sent: msg_id=${data.msg_id}`);
     if (this.agent) {
@@ -484,10 +508,19 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
   }
 
   private handleProcessExit(code: number | null, activeMsgId: string): void {
-    mainError('[AionrsManager]', `aionrs process exited unexpectedly (code=${code}) during active turn ${activeMsgId}`);
-
+    const expectedStop = this.stopRequested;
+    this.stopHeartbeat();
+    this.agent = null;
     this.status = 'finished';
     void this.handleTurnEnd();
+
+    if (expectedStop) {
+      this.stopRequested = false;
+      mainLog('[AionrsManager]', `aionrs process exited after stop request (code=${code})`);
+      return;
+    }
+
+    mainError('[AionrsManager]', `aionrs process exited unexpectedly (code=${code}) during active turn ${activeMsgId}`);
 
     const errorMessage: IResponseMessage = {
       type: 'error',
@@ -832,8 +865,12 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
   }
 
   override kill() {
+    this.stopHeartbeat();
+    cronBusyGuard.setProcessing(this.conversation_id, false);
+    this.stopRequested = true;
     if (this.agent) {
-      this.agent.kill();
+      this.agent.kill({ expected: true });
+      this.agent = null;
     }
     super.kill();
   }
