@@ -312,7 +312,7 @@ export function initFsBridge(): void {
         try {
           const { tryGetFilesByDirInContainer } = await import('@process/bridge/fsBridgeContainer');
           const cr = await tryGetFilesByDirInContainer(conversationId, dir);
-          if (cr.ok) return cr.data as Array<IDirOrFile>;
+          if (cr.ok) return cr.data as import('@/common/adapter/ipcBridge').IDirOrFile[];
         } catch {
           // fall through to host
         }

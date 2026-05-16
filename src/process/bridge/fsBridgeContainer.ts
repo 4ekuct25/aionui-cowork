@@ -4,58 +4,50 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import Docker from 'dockerode';
-import { PassThrough } from 'stream';
+import Docker, { type Container, type Exec } from 'dockerode';
+import { PassThrough, Readable, Writable } from 'stream';
 import { toContainerPath, CONTAINER_WORKSPACE } from '@process/runtime/pathMap';
 
 /**
  * Singleton dockerode handle for container fs operations. Honours DOCKER_HOST
  * so the control-plane can go through docker-socket-proxy.
  */
-function getDocker(): Docker {
-  const host = process.env.DOCKER_HOST;
-  if (host) {
-    const url = new URL(host);
-    if (url.protocol === 'tcp:' || url.protocol === 'http:') {
-      const port = Number(url.port) || 2375;
-      return new Docker({ host: url.hostname, port, protocol: 'http' });
+function parseDockerHost(env: string | undefined): import('dockerode').DockerOptions | null {
+  if (!env) return null;
+  try {
+    const url = new URL(env);
+    if (url.protocol === 'unix:') return { socketPath: url.pathname };
+    if (url.protocol === 'tcp:' || url.protocol === 'http:' || url.protocol === 'https:') {
+      const port = Number(url.port) || (url.protocol === 'https:' ? 2376 : 2375);
+      return { host: url.hostname, port, protocol: url.protocol === 'https:' ? 'https' : 'http' };
     }
-    if (url.protocol === 'https:') {
-      const port = Number(url.port) || 2376;
-      return new Docker({ host: url.hostname, port, protocol: 'https' });
-    }
+  } catch {
+    // ignore
   }
-  return new Docker();
+  return null;
 }
 
 let _docker: Docker | null = null;
-function docker(): Docker {
-  if (!_docker) _docker = getDocker();
+function getDocker(): Docker {
+  if (!_docker) {
+    _docker = new Docker(parseDockerHost(process.env.DOCKER_HOST) ?? undefined);
+  }
   return _docker;
 }
 
 /**
  * Auto-resolve the container for a given path by scanning active sessions.
- * This is used when the caller doesn't know the conversationId but the path
- * belongs to a session container's volume. In Docker mode, the volume is
- * mounted at /workspace inside the container, and the host path doesn't
- * directly map — so this checks if the path starts with /workspace.
  */
 async function resolveSessionForPath(
   conversationId: string | undefined,
-  filePath: string,
+  _filePath: string,
 ): Promise<{ containerId: string } | null> {
-  // If conversationId is provided, use it directly
   if (conversationId) {
     return resolveSession(conversationId);
   }
-  // Otherwise, try to find a matching session by scanning active containers
-  // In Docker mode, paths that start with /workspace should route through
-  // the container. We find the first active session and route to it.
   try {
     const { DockerSessionManager } = await import('@process/services/DockerSessionManager');
     const sessions = await DockerSessionManager.listActive();
-    // If there's exactly one active session, use it
     if (sessions.length === 1 && sessions[0].container_id) {
       return { containerId: sessions[0].container_id };
     }
@@ -80,7 +72,7 @@ async function resolveSession(conversationId: string): Promise<{ containerId: st
 }
 
 /**
- * Execute a command inside a container and capture stdout.
+ * Execute a command inside a container and capture stdout/stderr.
  */
 async function execInContainer(
   containerId: string,
@@ -88,76 +80,79 @@ async function execInContainer(
   args: string[],
   input?: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const d = docker();
-  const container = d.getContainer(containerId);
+  const d = getDocker();
+  const container: Container = d.getContainer(containerId);
 
-  const execPromise = new Promise<Docker.Exec>(
-    (resolve, reject) => container.exec({ Cmd: [command, ...args], AttachStdout: true, AttachStderr: true, Tty: false }, (err, e) => err ? reject(err) : resolve(e!)),
-  );
-  const exec = await execPromise;
-
-  const startPromise = new Promise<Docker.Modem.DuplexStream>(
-    (resolve, reject) => exec.start({ hijack: false, stdin: input ? true : undefined }, (err, s) => err ? reject(err) : resolve(s!)),
-  );
-  const stream = await startPromise;
-
-  let stdout = '';
-  let stderr = '';
-
-  if (input) {
-    stream.write(input);
-  }
-
-  await new Promise<void>((resolve) => {
-    const chunks: { type: string; data: Buffer }[] = [];
-    stream.on('data', (chunk: { type: string; data: Buffer }) => {
-      chunks.push(chunk);
-    });
-    stream.on('end', () => {
-      for (const c of chunks) {
-        if (c.type === 1) stdout += c.data.toString('utf-8');
-        else if (c.type === 2) stderr += c.data.toString('utf-8');
-      }
-      resolve();
-    });
-    stream.on('error', () => resolve());
+  const exec = await container.exec({
+    Cmd: [command, ...args],
+    AttachStdin: !!input,
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: false,
   });
 
-  const info = await new Promise<Docker.ExecInspect>((resolve, reject) => exec.inspect((err, info) => err ? reject(err) : resolve(info!)));
-  return { stdout, stderr, exitCode: info.ExitCode ?? 0 };
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const stream = await exec.start({ hijack: true, stdin: input ? true : undefined });
+
+  if (input) {
+    (stream as unknown as Writable).write(input);
+  }
+
+  d.modem.demuxStream(stream as unknown as NodeJS.ReadableStream, stdout, stderr);
+
+  const [outChunks, errChunks] = await Promise.all([
+    collectStream(stdout),
+    collectStream(stderr),
+  ]);
+
+  const info = await exec.inspect();
+  return {
+    stdout: Buffer.concat(outChunks).toString('utf-8'),
+    stderr: Buffer.concat(errChunks).toString('utf-8'),
+    exitCode: (info as unknown as { ExitCode?: number }).ExitCode ?? 0,
+  };
 }
 
 /**
- * Execute a command inside a container with streaming stdout (for large files).
+ * Execute a command inside a container and return raw stdout buffer (for binary data).
  */
 async function execRawInContainer(
   containerId: string,
   command: string,
   args: string[],
 ): Promise<Buffer> {
-  const d = docker();
-  const container = d.getContainer(containerId);
+  const d = getDocker();
+  const container: Container = d.getContainer(containerId);
 
-  const execPromise = new Promise<Docker.Exec>(
-    (resolve, reject) => container.exec({ Cmd: [command, ...args], AttachStdout: true, AttachStderr: true, Tty: false }, (err, e) => err ? reject(err) : resolve(e!)),
-  );
-  const exec = await execPromise;
-
-  const startPromise = new Promise<Docker.Modem.DuplexStream>(
-    (resolve, reject) => exec.start({ hijack: false }, (err, s) => err ? reject(err) : resolve(s!)),
-  );
-  const stream = await startPromise;
-
-  const buffers: Buffer[] = [];
-  await new Promise<void>((resolve) => {
-    stream.on('data', (chunk: { type: string; data: Buffer }) => {
-      if (chunk.type === 1) buffers.push(chunk.data);
-    });
-    stream.on('end', () => resolve());
-    stream.on('error', () => resolve());
+  const exec = await container.exec({
+    Cmd: [command, ...args],
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: false,
   });
 
-  return Buffer.concat(buffers);
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const stream = await exec.start({ hijack: true });
+
+  d.modem.demuxStream(stream as unknown as NodeJS.ReadableStream, stdout, stderr);
+
+  const [outChunks] = await Promise.all([
+    collectStream(stdout),
+    collectStream(stderr),
+  ]);
+
+  return Buffer.concat(outChunks);
+}
+
+async function collectStream(stream: Readable): Promise<Buffer[]> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+    stream.on('end', () => resolve(chunks));
+    stream.on('error', () => resolve(chunks));
+  });
 }
 
 // ============================================================================
@@ -205,13 +200,12 @@ export async function tryReadFileBufferInContainer(
   if (!cp) return { ok: false };
 
   try {
-    const result = await execInContainer(session.containerId, 'node', ['-e', `
-      const fs = require('fs');
-      const data = fs.readFileSync(process.argv[1]);
-      process.stdout.write(data);
-    `, cp]);
-    if (result.exitCode === 0) {
-      return { ok: true, data: result.stdout };
+    const buf = await execRawInContainer(session.containerId, 'cat', [cp]);
+    if (buf.length > 0) {
+      const ab = new ArrayBuffer(buf.byteLength);
+      const view = new Uint8Array(ab);
+      view.set(buf);
+      return { ok: true, data: ab };
     }
   } catch {
     // fall through to host
@@ -345,18 +339,10 @@ export async function tryRenameEntryInContainer(
 /**
  * Try to list directory contents through the container.
  */
-export interface IDirOrFileResult {
-  name: string;
-  path: string;
-  isDirectory: boolean;
-  size: number;
-  modifiedTime: number;
-}
-
 export async function tryGetFilesByDirInContainer(
   conversationId: string | undefined,
   dirPath: string,
-): Promise<{ ok: true; data: IDirOrFileResult[] } | { ok: false }> {
+): Promise<{ ok: true; data: Array<{ name: string; fullPath: string; relativePath: string; isDir: boolean; isFile: boolean }> } | { ok: false }> {
   const session = await resolveSessionForPath(conversationId, dirPath);
   if (!session) return { ok: false };
   const cp = toContainerPath(dirPath);
@@ -377,10 +363,10 @@ export async function tryGetFilesByDirInContainer(
               const s = fs.statSync(full);
               entries.push({
                 name: item.name,
-                path: rel,
-                isDirectory: item.isDirectory(),
-                size: s.size,
-                modifiedTime: s.mtimeMs,
+                fullPath: full,
+                relativePath: rel,
+                isDir: item.isDirectory(),
+                isFile: item.isFile(),
               });
               if (item.isDirectory()) {
                 entries = entries.concat(walk(full, rel));
@@ -530,7 +516,7 @@ export async function tryCopyFilesToWorkspaceInContainer(
   const destWorkspace = toContainerPath(workspace) || CONTAINER_WORKSPACE;
 
   try {
-    const d = docker();
+    const d = getDocker();
     const container = d.getContainer(session.containerId);
 
     for (const fp of filePaths) {
@@ -561,7 +547,7 @@ export async function tryCopyFilesToWorkspaceInContainer(
 export async function tryListWorkspaceFilesInContainer(
   conversationId: string | undefined,
   rootPath: string,
-): Promise<{ ok: true; data: Array<{ name: string; path: string; size: number; mtime: number }> } | { ok: false }> {
+): Promise<{ ok: true; data: Array<{ name: string; fullPath: string; relativePath: string }> } | { ok: false }> {
   const session = await resolveSessionForPath(conversationId, rootPath);
   if (!session) return { ok: false };
   const cp = toContainerPath(rootPath) || CONTAINER_WORKSPACE;
@@ -580,7 +566,7 @@ export async function tryListWorkspaceFilesInContainer(
             try {
               const s = fs.statSync(full);
               if (s.isFile()) {
-                entries.push({ name: item, path: rel, size: s.size, mtime: s.mtimeMs });
+                entries.push({ name: item, fullPath: full, relativePath: rel });
               }
             } catch {}
           }

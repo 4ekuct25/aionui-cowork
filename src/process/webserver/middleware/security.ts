@@ -126,13 +126,65 @@ export const sessionLifecycleLimiter = rateLimit({
  * tiny-csrf 提供 req.csrfToken() 方法来生成 token
  */
 export function attachCsrfToken(req: Request, res: Response, next: NextFunction): void {
-  // tiny-csrf provides req.csrfToken() method
+  // tiny-csrf's req.csrfToken() generates a new token + cookie on every call.
+  // This means every request rotates the CSRF token, invalidating any token
+  // the client previously cached. Fix: only generate a token when the cookie
+  // is missing, and pin req.csrfToken() to stop further rotation.
   if (typeof req.csrfToken === 'function') {
-    const token = req.csrfToken();
+    const existingCookie = req.signedCookies?.csrfToken;
+    let token: string;
+    if (existingCookie) {
+      // Cookie exists — do NOT call req.csrfToken() which would rotate it.
+      // Instead, decrypt the cookie to get the UUID for the header.
+      token = decryptCsrfCookie(existingCookie);
+      if (token) {
+        // Pin req.csrfToken() to return the same token without rotating.
+        req.csrfToken = () => token;
+      }
+    }
+    if (!token) {
+      // No valid cookie — generate a fresh one.
+      token = req.csrfToken();
+    }
     res.setHeader(CSRF_HEADER_NAME, token);
     res.locals.csrfToken = token;
+
+    // Ensure the cookie is always present in the response. tiny-csrf clears
+    // it (sets to null) after successful POST verification. If we don't
+    // re-issue it, the next request has no CSRF cookie and fails.
+    const rawHeaders = res.getHeaders();
+    const pendingCookies = (rawHeaders['set-cookie'] as string[]) || [];
+    const clearingCsrf = Array.isArray(pendingCookies)
+      ? pendingCookies.some((c) => String(c).startsWith('csrfToken=;') || String(c).startsWith('csrfToken=null'))
+      : (String(pendingCookies).startsWith('csrfToken=;') || String(pendingCookies).startsWith('csrfToken=null'));
+    if (clearingCsrf) {
+      // tiny-csrf scheduled the cookie for deletion. Re-issue it so the
+      // client has a valid token for subsequent requests.
+      const { encryptCookie } = require('tiny-csrf/encryption');
+      const secret = process.env.CSRF_SECRET;
+      if (secret) {
+        res.cookie(
+          'csrfToken',
+          encryptCookie(token, secret),
+          { httpOnly: true, sameSite: 'strict', signed: true, maxAge: 300000 }
+        );
+      }
+    }
   }
   next();
+}
+
+// Decrypt the tiny-csrf encrypted cookie (iv:encryptedData) to get the plain UUID.
+// Returns null if decryption fails.
+function decryptCsrfCookie(cookieValue: string): string | null {
+  try {
+    const { decryptCookie } = require('tiny-csrf/encryption');
+    const secret = process.env.CSRF_SECRET;
+    if (!secret) return null;
+    return decryptCookie(cookieValue, secret);
+  } catch {
+    return null;
+  }
 }
 
 /**

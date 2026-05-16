@@ -20,14 +20,10 @@ export const removeWorkspaceEntry = (path: string, conversationId?: string) => {
   return ipcBridge.fs.removeEntry.invoke({ path, conversationId }) as Promise<IBridgeResponse>;
 };
 
-export const renameWorkspaceEntry = (path: string, newName: string, conversationId?: string) => {
-  return ipcBridge.fs.renameEntry.invoke({ path, newName, conversationId }) as Promise<IBridgeResponse<{ newPath: string }>>;
-};
-
 /**
  * Rename a file or directory inside the workspace.
  * 调用主进程桥接接口重命名工作空间中的文件或文件夹。
  */
-export const renameWorkspaceEntry = (path: string, newName: string) => {
-  return ipcBridge.fs.renameEntry.invoke({ path, newName }) as Promise<IBridgeResponse<{ newPath: string }>>;
+export const renameWorkspaceEntry = (path: string, newName: string, conversationId?: string) => {
+  return ipcBridge.fs.renameEntry.invoke({ path, newName, conversationId }) as Promise<IBridgeResponse<{ newPath: string }>>;
 };

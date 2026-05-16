@@ -28,6 +28,7 @@ import { getTeamGuideStdioConfig } from '@process/team/mcp/guide/teamGuideSingle
 import BaseAgentManager from './BaseAgentManager';
 import { IpcAgentEventEmitter } from './IpcAgentEventEmitter';
 import { mainLog, mainWarn, mainError } from '@process/utils/mainLogger';
+import { getEnhancedEnv } from '@process/utils/shellEnv';
 import { hasCronCommands } from './CronCommandDetector';
 import { extractTextFromMessage, processCronInMessage } from './MessageMiddleware';
 import { stripThinkTags, extractAndStripThinkTags } from './ThinkTagDetector';
@@ -162,7 +163,7 @@ export class GeminiAgentManager extends BaseAgentManager<
     },
     model: TProviderWithModel
   ) {
-    super('gemini', { ...data, model }, new IpcAgentEventEmitter());
+    super('gemini', { ...data, model }, new IpcAgentEventEmitter(), false);
     this.workspace = data.workspace;
     this.conversation_id = data.conversation_id;
     this.model = model;
@@ -190,7 +191,7 @@ export class GeminiAgentManager extends BaseAgentManager<
     });
   }
 
-  /**
+   /**
    * Create bootstrap promise that initializes the worker with current config.
    * Extracted to allow re-bootstrapping when MCP config changes.
    */
@@ -255,10 +256,36 @@ export class GeminiAgentManager extends BaseAgentManager<
           effectivePresetRules = effectivePresetRules ? `${effectivePresetRules}\n\n${teamGuide}` : teamGuide;
         }
 
+        // Docker-backed deployment: resolve session container before forking
+        // the Gemini worker so it runs inside the sandbox with /workspace
+        // pointing at the project volume. Mirrors AionrsManager.start().
+        let containerId: string | undefined;
+        let resolvedWorkspace = this.workspace;
+        if ((process.env.AIONUI_PLATFORM ?? '').trim().toLowerCase() === 'docker') {
+          try {
+            const { DockerSessionManager } = await import('@process/services/DockerSessionManager');
+            const session = await DockerSessionManager.ensureForConversation(this.conversation_id);
+            if (session) {
+              containerId = session.containerId;
+              resolvedWorkspace = '/workspace';
+            }
+          } catch (err) {
+            mainError('[GeminiAgentManager] DockerSessionManager.ensureForConversation failed:', err);
+          }
+        }
+
+        // Fork worker with resolved container env (Phase 4B.2)
+        const workerEnv = getEnhancedEnv();
+        if (containerId) {
+          workerEnv['AIONUI_CONTAINER_ID'] = containerId;
+          mainLog('[GeminiAgentManager]', `Forking Gemini worker into container ${containerId}`);
+        }
+        this.init(workerEnv);
+
         return this.start({
           ...config,
           GOOGLE_CLOUD_PROJECT: projectId,
-          workspace: this.workspace,
+          workspace: resolvedWorkspace,
           model: this.model,
           webSearchEngine: this.webSearchEngine,
           mcpServers,
@@ -747,8 +774,8 @@ export class GeminiAgentManager extends BaseAgentManager<
     }
   }
 
-  init() {
-    super.init();
+  init(envOverride?: Record<string, string>) {
+    super.init(envOverride);
     this.on('exit', (data: { code: number | null; signal: NodeJS.Signals | null }) => {
       const crashMessage = {
         conversation_id: this.conversation_id,

@@ -23,7 +23,7 @@ export class ForkTask<Data> extends Pipe {
   protected fcp: IWorkerProcess | undefined;
   private killFn: () => void;
   private enableFork: boolean;
-  private childExitExpected = false;
+  protected childExitExpected = false;
   constructor(path: string, data: Data, enableFork = true) {
     super(true);
     this.path = path;
@@ -42,7 +42,7 @@ export class ForkTask<Data> extends Pipe {
     }
     process.off('exit', this.killFn);
   }
-  protected init() {
+  protected init(workerEnv?: Record<string, string>) {
     const platform = getPlatformServices();
     // In packaged Electron builds, resolve to app.asar.unpacked for WASM files.
     const workerCwd = platform.paths.isPackaged()
@@ -51,10 +51,10 @@ export class ForkTask<Data> extends Pipe {
     // Pass enhanced shell environment so workers inherit the full PATH (nvm, npm globals, etc.)
     // This is critical for skills that depend on globally installed tools (node, npm, playwright, etc.)
     // Without this, workers only get Electron's limited env, missing paths set in .zshrc/.bashrc
-    const workerEnv = getEnhancedEnv();
+    const env = workerEnv ?? getEnhancedEnv();
     const fcp = platform.worker.fork(this.path, [], {
       cwd: workerCwd,
-      env: workerEnv,
+      env,
     });
     this.childExitExpected = false;
     // 接受子进程发送的消息

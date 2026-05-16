@@ -55,8 +55,22 @@ class BaseAgentManager<Data, ConfirmationOption extends any = any>
       this.yoloMode = !!(data as any).yoloMode;
     }
   }
-  protected init(): void {
-    super.init();
+  protected init(envOverride?: Record<string, string>): void {
+    super.init(envOverride);
+  }
+
+  /**
+   * Re-initialize the worker process with an updated environment.
+   * Used by subclasses to inject AIONUI_CONTAINER_ID after async resolution.
+   * Kills the existing fork and creates a new one with the resolved env.
+   */
+  protected reinit(envOverride: Record<string, string>): void {
+    if (this.fcp) {
+      this.childExitExpected = true;
+      this.fcp.kill();
+      this.fcp = undefined;
+    }
+    super.init(envOverride);
   }
   protected addConfirmation(data: IConfirmation<ConfirmationOption>) {
     // If yoloMode is active, attempt to auto-confirm instead of adding
