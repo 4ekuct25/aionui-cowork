@@ -8,22 +8,49 @@ import Docker, { type DockerOptions } from 'dockerode';
 import { getDatabase } from '@process/services/database/export';
 
 /**
- * Phase 9.1 — background sweep that cleans up Docker volumes and
- * containers that we created (labeled `aionui.managed=true`) but no
- * longer have a matching row in `docker_sessions`. Causes:
+ * Background sweep covering three concerns:
  *
- *  - app crashed mid-acquire after createVolume but before container start
- *  - DB row deleted manually (admin tooling, GDPR purge, …)
- *  - cascade DELETE on conversations removed the session row but the
- *    JS-side teardown never ran (e.g. process died before destroy)
+ *  1. **DB reconciliation** (Phase 9.3) — any session row claiming the
+ *     container is `running` / `starting` but whose container is gone or
+ *     stopped in Docker gets marked `stopped`. Without this, phantom rows
+ *     pin the orphan-cleanup step (#3) and silently leak volumes.
  *
- * The sweep is purely deletion of "we have it, but nothing references it".
- * It never deletes anything that isn't tagged `aionui.managed=true`, so
- * tenants of the same docker host that aren't part of this stack are
+ *  2. **Idle-stop** (Phase 9.3) — rows still legitimately `running` but
+ *     untouched for `SESSION_IDLE_TIMEOUT_MS` (default 30 min) get the
+ *     container stopped+removed. The volume + DB row remain so the next
+ *     `DockerSessionManager.acquire()` rebuilds a fresh container against
+ *     the same workspace. Without this, every chat ever opened pins ~1 GiB
+ *     of RAM until the operator reboots the host.
+ *
+ *  3. **Orphan cleanup** (Phase 9.1, original) — Docker objects tagged
+ *     `aionui.managed=true` whose conversation has been fully deleted from
+ *     the DB get force-removed. Causes:
+ *      - app crashed mid-acquire after createVolume but before container start
+ *      - DB row deleted manually (admin tooling, GDPR purge, …)
+ *      - cascade DELETE on conversations removed the session row but the
+ *        JS-side teardown never ran (e.g. process died before destroy)
+ *
+ * The sweep never deletes anything that isn't tagged `aionui.managed=true`,
+ * so tenants of the same docker host that aren't part of this stack are
  * unaffected.
  */
 const LABEL_MANAGED = 'aionui.managed';
 const LABEL_CONVERSATION = 'aionui.conversation';
+
+const IDLE_TIMEOUT_MS_DEFAULT = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Idle-stop cutoff. Set `SESSION_IDLE_TIMEOUT_MS=0` to disable idle eviction
+ * (legacy "keep forever" behaviour). Negative / non-numeric values fall back
+ * to the default so a typo can't accidentally disable the safeguard.
+ */
+function getIdleTimeoutMs(): number {
+  const raw = (process.env.SESSION_IDLE_TIMEOUT_MS ?? '').trim();
+  if (!raw) return IDLE_TIMEOUT_MS_DEFAULT;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return IDLE_TIMEOUT_MS_DEFAULT;
+  return parsed;
+}
 
 /**
  * Mirror of parseDockerHost in DockerSessionManager — keeps the GC sweep
@@ -61,6 +88,10 @@ export function __setDockerForGcTests(docker: Docker | null): void {
 export type GcSummary = {
   containersRemoved: number;
   volumesRemoved: number;
+  /** Rows transitioned from running/starting → stopped because Docker had no live container for them. */
+  dbReconciled: number;
+  /** Containers stopped+removed because their row was idle past SESSION_IDLE_TIMEOUT_MS. */
+  idleStopped: number;
   errors: string[];
 };
 
@@ -72,22 +103,94 @@ export const DockerGcService = {
    * cleanup.
    */
   async sweep(): Promise<GcSummary> {
-    const summary: GcSummary = { containersRemoved: 0, volumesRemoved: 0, errors: [] };
+    const summary: GcSummary = {
+      containersRemoved: 0,
+      volumesRemoved: 0,
+      dbReconciled: 0,
+      idleStopped: 0,
+      errors: [],
+    };
     const docker = getDocker();
     const db = await getDatabase();
-
-    // Build the set of conversation IDs that are still "live" in the DB.
-    // We treat any row in docker_sessions as live, regardless of status —
-    // a 'stopped' row is still a record that something exists / existed
-    // and might be resumed; only rows that have been explicitly deleted
-    // are GC candidates.
     const driver = db.getDriver();
+
+    // 1. Reconcile DB. A row with status='running' or 'starting' should map
+    // to a Docker container that's actually up; anything else is a phantom
+    // (process died, host restarted with no DB restore, manual `docker rm`).
+    // We mark these stopped so step 3 can GC the volume once the row itself
+    // is deleted, and so the user's next acquire() builds a fresh container.
+    try {
+      const liveRows = driver
+        .prepare("SELECT conversation_id, container_id FROM docker_sessions WHERE status IN ('running','starting')")
+        .all() as Array<{ conversation_id: string; container_id: string | null }>;
+      for (const row of liveRows) {
+        let alive = false;
+        if (row.container_id) {
+          try {
+            const info = await docker.getContainer(row.container_id).inspect();
+            alive = Boolean(info.State?.Running);
+          } catch {
+            alive = false;
+          }
+        }
+        if (!alive) {
+          db.markDockerSessionStopped(row.conversation_id);
+          summary.dbReconciled += 1;
+        }
+      }
+    } catch (err) {
+      summary.errors.push(`reconcileDb: ${(err as Error).message}`);
+    }
+
+    // 2. Idle-stop. After reconciliation any row still 'running' truly has a
+    // live container; check last_seen_at to decide whether the user has
+    // touched the chat recently. acquire() bumps last_seen_at on every
+    // ensureForConversation call (i.e. every agent message), so a 30-min
+    // cutoff translates to "no agent activity for 30 min".
+    const idleMs = getIdleTimeoutMs();
+    if (idleMs > 0) {
+      const cutoff = Date.now() - idleMs;
+      try {
+        const idleRows = driver
+          .prepare(
+            "SELECT conversation_id, container_id FROM docker_sessions WHERE status = 'running' AND last_seen_at < ?"
+          )
+          .all(cutoff) as Array<{ conversation_id: string; container_id: string | null }>;
+        for (const row of idleRows) {
+          if (!row.container_id) continue;
+          try {
+            const container = docker.getContainer(row.container_id);
+            try {
+              await container.stop({ t: 10 });
+            } catch {
+              // ignore — already gone is fine
+            }
+            try {
+              await container.remove({ force: true });
+            } catch {
+              // ignore
+            }
+            db.markDockerSessionStopped(row.conversation_id);
+            summary.idleStopped += 1;
+          } catch (err) {
+            summary.errors.push(`idleStop ${row.conversation_id}: ${(err as Error).message}`);
+          }
+        }
+      } catch (err) {
+        summary.errors.push(`listIdle: ${(err as Error).message}`);
+      }
+    }
+
+    // 3. Orphan cleanup. Build the set of conversation IDs that are still
+    // "live" in the DB (any status — 'stopped' rows still pin their volume
+    // so the user can resume). Only Docker objects whose conversation has
+    // been fully deleted are GC candidates.
     const rows = driver.prepare('SELECT conversation_id FROM docker_sessions').all() as Array<{
       conversation_id: string;
     }>;
     const liveConversations = new Set(rows.map((r) => r.conversation_id));
 
-    // 1. Containers.
+    // 3a. Containers.
     try {
       const list = await docker.listContainers({
         all: true,
@@ -107,7 +210,7 @@ export const DockerGcService = {
       summary.errors.push(`listContainers: ${(err as Error).message}`);
     }
 
-    // 2. Volumes.
+    // 3b. Volumes.
     try {
       const result = await docker.listVolumes({ filters: { label: [`${LABEL_MANAGED}=true`] } });
       const volumes = result.Volumes ?? [];
@@ -136,10 +239,8 @@ export const DockerGcService = {
   async startupSweep(): Promise<void> {
     try {
       const summary = await this.sweep();
-      if (summary.containersRemoved || summary.volumesRemoved || summary.errors.length) {
-        console.log(
-          `[DockerGc] startup sweep: containers=${summary.containersRemoved} volumes=${summary.volumesRemoved} errors=${summary.errors.length}`
-        );
+      if (summarisable(summary)) {
+        console.log(`[DockerGc] startup sweep: ${formatSummary(summary)}`);
         for (const e of summary.errors) console.warn(`[DockerGc] ${e}`);
       }
     } catch (err) {
@@ -166,10 +267,8 @@ export const DockerGcService = {
     const job = new Cron(cronExpression, async () => {
       try {
         const summary = await this.sweep();
-        if (summary.containersRemoved || summary.volumesRemoved || summary.errors.length) {
-          console.log(
-            `[DockerGc] scheduled sweep: containers=${summary.containersRemoved} volumes=${summary.volumesRemoved} errors=${summary.errors.length}`
-          );
+        if (summarisable(summary)) {
+          console.log(`[DockerGc] scheduled sweep: ${formatSummary(summary)}`);
           for (const e of summary.errors) console.warn(`[DockerGc] ${e}`);
         }
       } catch (err) {
@@ -179,3 +278,11 @@ export const DockerGcService = {
     return { stop: () => job.stop() };
   },
 };
+
+function summarisable(s: GcSummary): boolean {
+  return Boolean(s.containersRemoved || s.volumesRemoved || s.dbReconciled || s.idleStopped || s.errors.length);
+}
+
+function formatSummary(s: GcSummary): string {
+  return `reconciled=${s.dbReconciled} idleStopped=${s.idleStopped} containers=${s.containersRemoved} volumes=${s.volumesRemoved} errors=${s.errors.length}`;
+}

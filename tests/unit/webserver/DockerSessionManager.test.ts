@@ -38,6 +38,10 @@ function makeDockerStub() {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
+    // Phase 9.2 Fix 2: acquire() now inspects an existing container before
+    // reusing the DB row. Default to "running" so the warm-reuse path works;
+    // tests that need the "container vanished" branch can override per-test.
+    inspect: vi.fn().mockResolvedValue({ State: { Running: true } }),
   };
   const volumeStub = { remove: vi.fn().mockResolvedValue(undefined) };
   return {
@@ -138,7 +142,14 @@ describe('DockerSessionManager.acquire', () => {
     // Helper container ran unzip with the upload path bind-mounted.
     expect(docker.run).toHaveBeenCalledOnce();
     const helperArgs = docker.run.mock.calls[0];
-    expect(helperArgs[1]).toEqual(['sh', '-c', expect.stringContaining('unzip -q -o /in/p1.zip -d /workspace')]);
+    // Path is shell-quoted defensively against injection; chown was added in
+    // Phase 9.2 Fix 5 so the runtime user (uid 10001) can write to /workspace.
+    expect(helperArgs[1][0]).toBe('sh');
+    expect(helperArgs[1][1]).toBe('-c');
+    expect(helperArgs[1][2]).toContain('unzip -q -o');
+    expect(helperArgs[1][2]).toContain('p1.zip');
+    expect(helperArgs[1][2]).toContain('-d /workspace');
+    expect(helperArgs[1][2]).toContain('chown -R 10001:10001 /workspace');
 
     // Session container started with sleep infinity + volume bind plus the
     // Phase 8.1 hardening: non-root user, read-only rootfs + tmpfs, dropped
