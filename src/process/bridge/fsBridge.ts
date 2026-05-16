@@ -306,8 +306,17 @@ async function getCachedWorkspaceFiles(root: string): Promise<IWorkspaceFlatFile
 export function initFsBridge(): void {
   const canceledZipRequests = new Set<string>();
 
-  ipcBridge.fs.getFilesByDir.provider(async ({ dir }) => {
+  ipcBridge.fs.getFilesByDir.provider(async ({ dir, conversationId }) => {
     try {
+      if (conversationId) {
+        try {
+          const { tryGetFilesByDirInContainer } = await import('@process/bridge/fsBridgeContainer');
+          const cr = await tryGetFilesByDirInContainer(conversationId, dir);
+          if (cr.ok) return cr.data as Array<IDirOrFile>;
+        } catch {
+          // fall through to host
+        }
+      }
       const tree = await readDirectoryRecursive(dir);
       return tree ? [tree] : [];
     } catch (error) {
@@ -316,8 +325,17 @@ export function initFsBridge(): void {
     }
   });
 
-  ipcBridge.fs.listWorkspaceFiles.provider(async ({ root }) => {
+  ipcBridge.fs.listWorkspaceFiles.provider(async ({ root, conversationId }) => {
     try {
+      if (conversationId) {
+        try {
+          const { tryListWorkspaceFilesInContainer } = await import('@process/bridge/fsBridgeContainer');
+          const cr = await tryListWorkspaceFilesInContainer(conversationId, root);
+          if (cr.ok) return cr.data as Array<IWorkspaceFlatFile>;
+        } catch {
+          // fall through to host
+        }
+      }
       return await getCachedWorkspaceFiles(root);
     } catch (error) {
       console.error('[fsBridge] Failed to list workspace files:', root, error);
@@ -325,8 +343,17 @@ export function initFsBridge(): void {
     }
   });
 
-  ipcBridge.fs.getImageBase64.provider(async ({ path: filePath }) => {
+  ipcBridge.fs.getImageBase64.provider(async ({ path: filePath, conversationId }) => {
     try {
+      if (conversationId) {
+        try {
+          const { tryGetImageBase64InContainer } = await import('@process/bridge/fsBridgeContainer');
+          const cr = await tryGetImageBase64InContainer(conversationId, filePath);
+          if (cr.ok) return cr.data;
+        } catch {
+          // fall through to host
+        }
+      }
       const ext = (path.extname(filePath) || '').toLowerCase().replace(/^\./, '');
       const mimeMap: Record<string, string> = {
         png: 'image/png',
@@ -345,7 +372,6 @@ export function initFsBridge(): void {
       const base64 = await fs.readFile(filePath, { encoding: 'base64' });
       return `data:${mime};base64,${base64}`;
     } catch (error) {
-      // Return a placeholder data URL instead of throwing
       return 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZGRkIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkltYWdlIG5vdCBmb3VuZDwvdGV4dD48L3N2Zz4=';
     }
   });
@@ -570,8 +596,17 @@ export function initFsBridge(): void {
   // V8 string length limit is ~512MB; guard against RangeError on oversized files
   const MAX_READ_FILE_SIZE = 256 * 1024 * 1024; // 256 MB
 
-  ipcBridge.fs.readFile.provider(async ({ path: filePath }) => {
+  ipcBridge.fs.readFile.provider(async ({ path: filePath, conversationId }) => {
     try {
+      if (conversationId) {
+        try {
+          const { tryReadFileInContainer } = await import('@process/bridge/fsBridgeContainer');
+          const containerResult = await tryReadFileInContainer(conversationId, filePath);
+          if (containerResult.ok) return containerResult.data;
+        } catch {
+          // fall through to host
+        }
+      }
       const stat = await fs.stat(filePath);
       if (stat.size > MAX_READ_FILE_SIZE) {
         console.warn(`[fsBridge] File too large to read as text (${stat.size} bytes): ${filePath}`);
@@ -591,11 +626,18 @@ export function initFsBridge(): void {
   });
 
   // 读取二进制文件为 ArrayBuffer / Read binary file as ArrayBuffer
-  ipcBridge.fs.readFileBuffer.provider(async ({ path: filePath }) => {
+  ipcBridge.fs.readFileBuffer.provider(async ({ path: filePath, conversationId }) => {
     try {
+      if (conversationId) {
+        try {
+          const { tryReadFileBufferInContainer } = await import('@process/bridge/fsBridgeContainer');
+          const containerResult = await tryReadFileBufferInContainer(conversationId, filePath);
+          if (containerResult.ok) return containerResult.data;
+        } catch {
+          // fall through to host
+        }
+      }
       const buffer = await fs.readFile(filePath);
-      // 将 Node.js Buffer 转换为 ArrayBuffer
-      // Convert Node.js Buffer to ArrayBuffer
       return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -608,8 +650,17 @@ export function initFsBridge(): void {
   });
 
   // 写入文件
-  ipcBridge.fs.writeFile.provider(async ({ path: filePath, data }) => {
+  ipcBridge.fs.writeFile.provider(async ({ path: filePath, data, conversationId }) => {
     try {
+      if (conversationId && typeof data === 'string') {
+        try {
+          const { tryWriteFileInContainer } = await import('@process/bridge/fsBridgeContainer');
+          const ok = await tryWriteFileInContainer(conversationId, filePath, data);
+          if (ok) return true;
+        } catch {
+          // fall through to host
+        }
+      }
       // 处理字符串类型 / Handle string type
       if (typeof data === 'string') {
         await fs.writeFile(filePath, data, 'utf-8');
@@ -799,19 +850,35 @@ export function initFsBridge(): void {
   });
 
   // 获取文件元数据
-  ipcBridge.fs.getFileMetadata.provider(async ({ path: filePath }) => {
+  ipcBridge.fs.getFileMetadata.provider(async ({ path: filePath, conversationId }) => {
     try {
+      if (conversationId) {
+        try {
+          const { tryGetFileMetadataInContainer } = await import('@process/bridge/fsBridgeContainer');
+          const cr = await tryGetFileMetadataInContainer(conversationId, filePath);
+          if (cr.ok) {
+            return {
+              name: path.basename(filePath),
+              path: filePath,
+              size: cr.data.size,
+              type: '',
+              lastModified: cr.data.mtime,
+            };
+          }
+        } catch {
+          // fall through to host
+        }
+      }
       const stats = await fs.stat(filePath);
       return {
         name: path.basename(filePath),
         path: filePath,
         size: stats.size,
-        type: '', // MIME type可以根据扩展名推断
+        type: '',
         lastModified: stats.mtime.getTime(),
       };
     } catch (error) {
       // Return empty metadata instead of throwing to avoid unhandled rejection
-      // (bridge provider callbacks have no .catch handler)
       console.error('[fsBridge] Failed to get file metadata:', filePath, error);
       return {
         name: path.basename(filePath),
@@ -899,8 +966,17 @@ export function initFsBridge(): void {
   });
 
   // Delete file or directory on disk (删除磁盘上的文件或文件夹)
-  ipcBridge.fs.removeEntry.provider(async ({ path: targetPath }) => {
+  ipcBridge.fs.removeEntry.provider(async ({ path: targetPath, conversationId }) => {
     try {
+      if (conversationId) {
+        try {
+          const { tryRemoveEntryInContainer } = await import('@process/bridge/fsBridgeContainer');
+          const ok = await tryRemoveEntryInContainer(conversationId, targetPath);
+          if (ok) return { success: true };
+        } catch {
+          // fall through to host
+        }
+      }
       const stats = await fs.lstat(targetPath);
       if (stats.isDirectory()) {
         await fs.rm(targetPath, { recursive: true, force: true });
@@ -939,13 +1015,21 @@ export function initFsBridge(): void {
   });
 
   // Rename file or directory and return new path (重命名文件/文件夹并返回新路径)
-  ipcBridge.fs.renameEntry.provider(async ({ path: targetPath, newName }) => {
+  ipcBridge.fs.renameEntry.provider(async ({ path: targetPath, newName, conversationId }) => {
     try {
+      if (conversationId) {
+        try {
+          const { tryRenameEntryInContainer } = await import('@process/bridge/fsBridgeContainer');
+          const cr = await tryRenameEntryInContainer(conversationId, targetPath, newName);
+          if (cr.ok) return { success: true, data: { newPath: cr.newPath } };
+        } catch {
+          // fall through to host
+        }
+      }
       const directory = path.dirname(targetPath);
       const newPath = path.join(directory, newName);
 
       if (newPath === targetPath) {
-        // Skip when the new name equals the original path (新旧路径一致时直接跳过)
         return { success: true, data: { newPath } };
       }
 
@@ -955,7 +1039,6 @@ export function initFsBridge(): void {
         .catch(() => false);
 
       if (exists) {
-        // Avoid overwriting existing targets (避免覆盖已存在的目标文件)
         return { success: false, msg: 'Target path already exists' };
       }
 

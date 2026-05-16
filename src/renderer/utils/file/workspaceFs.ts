@@ -16,8 +16,12 @@ interface IBridgeResponse<D = unknown> {
  * Remove a file or directory from the workspace using the main-process bridge.
  * 调用主进程桥接接口从工作空间中移除文件或文件夹。
  */
-export const removeWorkspaceEntry = (path: string) => {
-  return ipcBridge.fs.removeEntry.invoke({ path }) as Promise<IBridgeResponse>;
+export const removeWorkspaceEntry = (path: string, conversationId?: string) => {
+  return ipcBridge.fs.removeEntry.invoke({ path, conversationId }) as Promise<IBridgeResponse>;
+};
+
+export const renameWorkspaceEntry = (path: string, newName: string, conversationId?: string) => {
+  return ipcBridge.fs.renameEntry.invoke({ path, newName, conversationId }) as Promise<IBridgeResponse<{ newPath: string }>>;
 };
 
 /**

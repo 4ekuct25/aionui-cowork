@@ -219,20 +219,21 @@ export const dialog = {
   >('show-open'), // 打开文件/文件夹选择窗口
 };
 export const fs = {
-  getFilesByDir: bridge.buildProvider<Array<IDirOrFile>, { dir: string; root: string }>('get-file-by-dir'), // 获取指定文件夹下所有文件夹和文件列表
-  listWorkspaceFiles: bridge.buildProvider<Array<IWorkspaceFlatFile>, { root: string }>('list-workspace-files'),
-  getImageBase64: bridge.buildProvider<string, { path: string }>('get-image-base64'), // 获取图片base64
+  getFilesByDir: bridge.buildProvider<Array<IDirOrFile>, { dir: string; root: string; conversationId?: string }>('get-file-by-dir'), // 获取指定文件夹下所有文件夹和文件列表
+  listWorkspaceFiles: bridge.buildProvider<Array<IWorkspaceFlatFile>, { root: string; conversationId?: string }>('list-workspace-files'),
+  getImageBase64: bridge.buildProvider<string, { path: string; conversationId?: string }>('get-image-base64'), // 获取图片base64
   fetchRemoteImage: bridge.buildProvider<string, { url: string }>('fetch-remote-image'), // 远程图片转base64
-  readFile: bridge.buildProvider<string, { path: string }>('read-file'), // 读取文件内容（UTF-8）
-  readFileBuffer: bridge.buildProvider<ArrayBuffer, { path: string }>('read-file-buffer'), // 读取二进制文件为 ArrayBuffer
+  readFile: bridge.buildProvider<string, { path: string; conversationId?: string }>('read-file'), // 读取文件内容（UTF-8）
+  readFileBuffer: bridge.buildProvider<ArrayBuffer, { path: string; conversationId?: string }>('read-file-buffer'), // 读取二进制文件为 ArrayBuffer
   createTempFile: bridge.buildProvider<string, { fileName: string }>('create-temp-file'), // 创建临时文件
   createUploadFile: bridge.buildProvider<string, { fileName: string; conversationId?: string }>('create-upload-file'), // 创建上传文件（根据设置决定保存位置）
-  writeFile: bridge.buildProvider<boolean, { path: string; data: Uint8Array | string }>('write-file'), // 写入文件
+  writeFile: bridge.buildProvider<boolean, { path: string; data: Uint8Array | string; conversationId?: string }>('write-file'), // 写入文件
   createZip: bridge.buildProvider<
     boolean,
     {
       path: string;
       requestId?: string;
+      conversationId?: string;
       files: Array<{
         /** Path inside zip (supports nested paths like "topic-1/workspace/a.txt") */
         name: string;
@@ -244,14 +245,14 @@ export const fs = {
     }
   >('create-zip-file'), // 创建 zip 文件
   cancelZip: bridge.buildProvider<boolean, { requestId: string }>('cancel-zip-file'), // 取消 zip 创建任务
-  getFileMetadata: bridge.buildProvider<IFileMetadata, { path: string }>('get-file-metadata'), // 获取文件元数据
+  getFileMetadata: bridge.buildProvider<IFileMetadata, { path: string; conversationId?: string }>('get-file-metadata'), // 获取文件元数据
   copyFilesToWorkspace: bridge.buildProvider<
     // 返回成功与部分失败的详细状态，便于前端提示用户 / Return details for successful and failed copies for better UI feedback
     IBridgeResponse<{ copiedFiles: string[]; failedFiles?: Array<{ path: string; error: string }> }>,
-    { filePaths: string[]; workspace: string; sourceRoot?: string }
+    { filePaths: string[]; workspace: string; sourceRoot?: string; conversationId?: string }
   >('copy-files-to-workspace'), // 复制文件到工作空间 (Copy files into workspace)
-  removeEntry: bridge.buildProvider<IBridgeResponse, { path: string }>('remove-entry'), // 删除文件或文件夹
-  renameEntry: bridge.buildProvider<IBridgeResponse<{ newPath: string }>, { path: string; newName: string }>(
+  removeEntry: bridge.buildProvider<IBridgeResponse, { path: string; conversationId?: string }>('remove-entry'), // 删除文件或文件夹
+  renameEntry: bridge.buildProvider<IBridgeResponse<{ newPath: string }>, { path: string; newName: string; conversationId?: string }>(
     'rename-entry'
   ), // 重命名文件或文件夹
   readBuiltinRule: bridge.buildProvider<string, { fileName: string }>('read-builtin-rule'), // 读取内置 rules 文件
