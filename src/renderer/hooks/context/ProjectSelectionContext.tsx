@@ -5,6 +5,7 @@
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { withCsrfToken } from '@process/webserver/middleware/csrfClient';
 
 /**
  * Lightweight chat-creation-time selection of an uploaded project. When set,
@@ -117,16 +118,13 @@ export function useProjectSelection(): ProjectSelectionContextValue {
 export async function attachConversationToProject(
   conversationId: string,
   projectId: string,
-  csrfToken?: string
 ): Promise<{ ok: boolean; status?: number; message?: string }> {
   try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const body: Record<string, string> = { conversationId, projectId };
-    if (csrfToken) body._csrf = csrfToken;
+    const body = withCsrfToken({ conversationId, projectId });
     const response = await fetch('/api/sessions', {
       method: 'POST',
       credentials: 'include',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!response.ok) {

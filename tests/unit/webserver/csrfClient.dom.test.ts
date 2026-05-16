@@ -30,6 +30,12 @@ describe('csrfClient', () => {
       delete mockCookies[key];
     });
     document.cookie = '';
+    // Reset the cached CSRF token from the fetch polyfill
+    // eslint-disable-next-line no-undef
+    if (typeof globalThis.__cachedCsrfToken !== 'undefined') {
+      // eslint-disable-next-line no-undef
+      (globalThis as any).__cachedCsrfToken = null;
+    }
   });
 
   afterEach(() => {

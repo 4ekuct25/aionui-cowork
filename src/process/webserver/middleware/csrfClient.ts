@@ -7,6 +7,24 @@
 import { parse as parseCookie } from 'cookie';
 import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME } from '@process/webserver/config/constants';
 
+// Cache CSRF token from the x-csrf-token response header. tiny-csrf sets its
+// cookie as HttpOnly (name 'csrfToken'), which JavaScript cannot read. The
+// `attachCsrfToken` middleware exposes the plain token in the `x-csrf-token`
+// response header on every request, so we polyfill `fetch()` to keep it cached.
+let __cachedCsrfToken: string | null = null;
+
+if (typeof window !== 'undefined' && typeof window.fetch !== 'undefined') {
+  const origFetch = window.fetch;
+  window.fetch = async (input, init) => {
+    const response = await origFetch(input, init);
+    const token = response.headers.get(CSRF_HEADER_NAME);
+    if (token) {
+      __cachedCsrfToken = token;
+    }
+    return response;
+  };
+}
+
 // Read cookie by name in browser environment with error handling
 // 在浏览器环境中根据名称读取指定 Cookie，带错误处理
 function readCookie(name: string): string | null {
@@ -70,6 +88,7 @@ export function clearAllCookies(): void {
 // Retrieve current CSRF token from cookie (if present)
 // 从 Cookie 中获取当前的 CSRF Token（若不存在则返回 null）
 export function getCsrfToken(): string | null {
+  if (__cachedCsrfToken) return __cachedCsrfToken;
   try {
     return readCookie(CSRF_COOKIE_NAME);
   } catch (error) {

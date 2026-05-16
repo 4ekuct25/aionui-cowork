@@ -5,14 +5,34 @@
  */
 
 import type { WebSocketServer } from 'ws';
+import type { IncomingMessage } from 'http';
 import { registerWebSocketBroadcaster, getBridgeEmitter } from '@/common/adapter/registry';
 import { WebSocketManager } from './websocket/WebSocketManager';
+import { getDatabase } from '@process/services/database/export';
 
 // 存储取消注册函数，用于服务器停止时清理
 // Store unregister function for cleanup when server stops
 let unregisterBroadcaster: (() => void) | null = null;
 // Module-level reference so cleanupWebAdapter can destroy the heartbeat timer
 let wsManagerInstance: WebSocketManager | null = null;
+
+/**
+ * Resolve the running container for a conversation.
+ */
+async function resolveContainerId(conversationId: string): Promise<string | null> {
+  try {
+    const db = await getDatabase();
+    const session = db
+      .getDriver()
+      .prepare(
+        `SELECT container_id FROM docker_sessions WHERE conversation_id = ? AND status = 'running'`
+      )
+      .get(conversationId) as { container_id: string } | undefined;
+    return session?.container_id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 初始化 Web 适配器 - 建立 WebSocket 与 bridge 的通信桥梁
@@ -36,14 +56,25 @@ export function initWebAdapter(wss: WebSocketServer): void {
 
   // 设置 WebSocket 消息处理器，将消息转发到 bridge emitter
   // Setup WebSocket message handler to forward messages to bridge emitter
-  wsManager.setupConnectionHandler((name, data, _ws) => {
-    const emitter = getBridgeEmitter();
-    if (emitter) {
-      emitter.emit(name, data);
-    } else {
-      console.warn('[adapter] Bridge emitter not set, message dropped:', name);
+  wsManager.setupConnectionHandler(
+    (name, data, _ws) => {
+      const emitter = getBridgeEmitter();
+      if (emitter) {
+        emitter.emit(name, data);
+      } else {
+        console.warn('[adapter] Bridge emitter not set, message dropped:', name);
+      }
+    },
+    async (ws: import('ws').WebSocket, conversationId: string, _req: IncomingMessage) => {
+      const containerId = await resolveContainerId(conversationId);
+      if (!containerId) {
+        ws.close(1008, 'No running container for this conversation');
+        return;
+      }
+      const { attachShellToContainer } = await import('./routes/shellRoute');
+      await attachShellToContainer(ws, containerId);
     }
-  });
+  );
 }
 
 /**

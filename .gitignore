@@ -207,3 +207,6 @@ graphify-out/
 .graphify_python
 
 .snow/
+
+# Local agent handoff doc (not part of upstream)
+HANDOFF.md

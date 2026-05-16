@@ -183,6 +183,38 @@ export function __setDockerForTests(docker: Docker | null): void {
   _docker = docker;
 }
 
+/**
+ * Resolve bind mounts for helper containers. In Docker mode the data directory
+ * lives on a named volume, so we can't use host paths for bind mounts because
+ * the Docker daemon only sees the host filesystem. Instead, we detect the
+ * Docker data volume and use volume-name syntax (volumeName:containerPath)
+ * which the daemon resolves against its volume store.
+ */
+function resolveDockerBinds(uploadsHostPath: string, workspaceVolumeName: string): string[] {
+  // Non-Docker mode: use the host path directly (works for Electron/dev)
+  if (process.env.AIONUI_PLATFORM !== 'docker') {
+    return [`${uploadsHostPath}:/in:ro`, `${workspaceVolumeName}:/workspace`];
+  }
+
+  // Docker mode: find the data volume and use volume-name syntax.
+  // The DATA_DIR env (e.g. /data) tells us where the volume is mounted inside
+  // the container. The compose file mounts a volume called
+  // `{project}_app-data` at that path. We derive the volume name from the
+  // docker-compose project prefix in the container hostname or fall back to
+  // inspecting the mount.
+  const dataDir = process.env.DATA_DIR ?? '/data';
+  const uploadRelPath = path.relative(dataDir, uploadsHostPath);
+  const composeProject = process.env.COMPOSE_PROJECT_NAME ?? 'aionui-cowork';
+  const dataVolumeName = `${composeProject}_app-data`;
+
+  // Mount the data volume at /data and the workspace volume at /workspace.
+  // The unzip command reads from /in which is a sub-path of the data volume.
+  return [
+    `${dataVolumeName}:${dataDir}:ro`,
+    `${workspaceVolumeName}:/workspace`,
+  ];
+}
+
 function volumeNameFor(userId: string, conversationId: string): string {
   // Volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]* (Docker rule). User
   // and conversation IDs are app-controlled so we just sanitise defensively.
@@ -256,16 +288,28 @@ export const DockerSessionManager = {
       },
     });
 
-    // 2. Extract the project zip into the volume. We mount the host upload
-    // path read-only and the volume rw, then run `unzip` in the helper image
-    // and wait for exit. This stays out of the long-running container so
-    // its rootfs can remain read-only later (Phase 8 hardening).
-    const uploadsDir = path.join(getDataPath(), 'uploads');
+    // 2. Extract the project zip into the volume. We mount the upload
+    // directory read-only and the volume rw, then run `unzip` in the helper
+    // image and wait for exit. This stays out of the long-running container
+    // so its rootfs can remain read-only later (Phase 8 hardening).
+    //
+    // In Docker mode (AIONUI_PLATFORM=docker) the data directory lives on a
+    // Docker volume, not a host path. Docker daemon resolves bind-mount
+    // sources against the host filesystem, so a container-internal path like
+    // /data/aionui/uploads is invisible. Fix: mount the data volume into the
+    // helper container using Docker's volume:source syntax, which resolves
+    // against the Docker daemon's volume store instead of the host path.
+    const uploadsHostPath = path.join(getDataPath(), 'uploads');
+    const binds = resolveDockerBinds(uploadsHostPath, volumeName);
+    const dataDir = process.env.DATA_DIR ?? '/data';
+    const zipSource = process.env.AIONUI_PLATFORM === 'docker'
+      ? `${dataDir}/aionui/uploads/${project.project.storage_key}`
+      : `/in/${project.project.storage_key}`;
     await runHelperToCompletion(docker, {
-      Cmd: ['sh', '-c', `unzip -q -o /in/${project.project.storage_key} -d /workspace`],
+      Cmd: ['sh', '-c', `unzip -q -o "${zipSource}" -d /workspace`],
       HostConfig: {
         AutoRemove: true,
-        Binds: [`${uploadsDir}:/in:ro`, `${volumeName}:/workspace`],
+        Binds: binds,
       },
       Labels: {
         [LABEL_MANAGED]: 'true',

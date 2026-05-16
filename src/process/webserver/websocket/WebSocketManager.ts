@@ -39,8 +39,33 @@ export class WebSocketManager {
    * 设置连接处理器
    * Setup connection handler
    */
-  setupConnectionHandler(onMessage: (name: string, data: any, ws: WebSocket) => void): void {
+  setupConnectionHandler(
+    onMessage: (name: string, data: any, ws: WebSocket) => void,
+    onShell?: (ws: WebSocket, conversationId: string, req: IncomingMessage) => Promise<void>,
+  ): void {
     this.wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
+      const url = new URL(req.url || '/', `http://${req.headers.host}`);
+
+      // Check if this is a shell connection
+      const shellMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/shell$/);
+      if (shellMatch && onShell) {
+        const conversationId = shellMatch[1];
+        const token = TokenMiddleware.extractWebSocketToken(req);
+
+        if (!token || !(await TokenMiddleware.validateWebSocketToken(token))) {
+          ws.close(WEBSOCKET_CONFIG.CLOSE_CODES.POLICY_VIOLATION, 'Authentication required');
+          return;
+        }
+
+        try {
+          await onShell(ws, conversationId, req);
+        } catch (err) {
+          console.error('[WebSocketManager] Shell error:', err);
+          ws.close(1011, 'Internal error');
+        }
+        return;
+      }
+
       // Buffer messages that arrive before async auth completes so they are
       // not lost due to the race between ws.on("message") registration and
       // the await below.

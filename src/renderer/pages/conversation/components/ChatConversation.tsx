@@ -34,6 +34,8 @@ import { useAionrsModelSelection } from '../platforms/aionrs/useAionrsModelSelec
 import { usePreviewContext } from '../Preview';
 import StarOfficeMonitorCard from '../platforms/openclaw/StarOfficeMonitorCard.tsx';
 import ConversationSkillsIndicator from './ConversationSkillsIndicator';
+import { ContainerStatusBadge } from './ChatLayout/ContainerStatusBadge';
+import { ContainerShellButton } from './ChatLayout/ContainerShellButton';
 // import SkillRuleGenerator from './components/SkillRuleGenerator'; // Temporarily hidden
 
 /** Check whether a specific skill is loaded for the conversation */
@@ -233,6 +235,8 @@ const AionrsConversationPanel: React.FC<{ conversation: AionrsConversation; slid
           cronJobId={conversation.extra?.cronJobId as string | undefined}
           hasCronSkill={hasLoadedSkill(conversation, 'cron')}
         />
+        <ContainerStatusBadge conversationId={conversation.id} />
+        <ContainerShellButton conversationId={conversation.id} />
       </div>
     ),
     workspaceEnabled,
@@ -432,6 +436,12 @@ const ChatConversation: React.FC<{
             hasCronSkill={hasLoadedSkill(conversation, 'cron')}
           />
         </div>
+      )}
+      {conversation && (
+        <>
+          <ContainerStatusBadge conversationId={conversation.id} />
+          <ContainerShellButton conversationId={conversation.id} />
+        </>
       )}
     </div>
   );
