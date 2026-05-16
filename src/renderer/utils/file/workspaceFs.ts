@@ -25,5 +25,7 @@ export const removeWorkspaceEntry = (path: string, conversationId?: string) => {
  * 调用主进程桥接接口重命名工作空间中的文件或文件夹。
  */
 export const renameWorkspaceEntry = (path: string, newName: string, conversationId?: string) => {
-  return ipcBridge.fs.renameEntry.invoke({ path, newName, conversationId }) as Promise<IBridgeResponse<{ newPath: string }>>;
+  return ipcBridge.fs.renameEntry.invoke({ path, newName, conversationId }) as Promise<
+    IBridgeResponse<{ newPath: string }>
+  >;
 };

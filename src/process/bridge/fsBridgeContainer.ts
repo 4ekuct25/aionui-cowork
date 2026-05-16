@@ -5,7 +5,8 @@
  */
 
 import Docker, { type Container, type Exec } from 'dockerode';
-import { PassThrough, Readable, Writable } from 'stream';
+import type { Readable, Writable } from 'stream';
+import { PassThrough } from 'stream';
 import { toContainerPath, CONTAINER_WORKSPACE } from '@process/runtime/pathMap';
 
 /**
@@ -40,7 +41,7 @@ function getDocker(): Docker {
  */
 async function resolveSessionForPath(
   conversationId: string | undefined,
-  _filePath: string,
+  _filePath: string
 ): Promise<{ containerId: string } | null> {
   if (conversationId) {
     return resolveSession(conversationId);
@@ -78,7 +79,7 @@ async function execInContainer(
   containerId: string,
   command: string,
   args: string[],
-  input?: string,
+  input?: string
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const d = getDocker();
   const container: Container = d.getContainer(containerId);
@@ -101,10 +102,7 @@ async function execInContainer(
 
   d.modem.demuxStream(stream as unknown as NodeJS.ReadableStream, stdout, stderr);
 
-  const [outChunks, errChunks] = await Promise.all([
-    collectStream(stdout),
-    collectStream(stderr),
-  ]);
+  const [outChunks, errChunks] = await Promise.all([collectStream(stdout), collectStream(stderr)]);
 
   const info = await exec.inspect();
   return {
@@ -117,11 +115,7 @@ async function execInContainer(
 /**
  * Execute a command inside a container and return raw stdout buffer (for binary data).
  */
-async function execRawInContainer(
-  containerId: string,
-  command: string,
-  args: string[],
-): Promise<Buffer> {
+async function execRawInContainer(containerId: string, command: string, args: string[]): Promise<Buffer> {
   const d = getDocker();
   const container: Container = d.getContainer(containerId);
 
@@ -138,10 +132,7 @@ async function execRawInContainer(
 
   d.modem.demuxStream(stream as unknown as NodeJS.ReadableStream, stdout, stderr);
 
-  const [outChunks] = await Promise.all([
-    collectStream(stdout),
-    collectStream(stderr),
-  ]);
+  const [outChunks] = await Promise.all([collectStream(stdout), collectStream(stderr)]);
 
   return Buffer.concat(outChunks);
 }
@@ -165,7 +156,7 @@ async function collectStream(stream: Readable): Promise<Buffer[]> {
  */
 export async function tryReadFileInContainer(
   conversationId: string | undefined,
-  filePath: string,
+  filePath: string
 ): Promise<{ ok: true; data: string } | { ok: false }> {
   const session = await resolveSessionForPath(conversationId, filePath);
   if (!session) return { ok: false };
@@ -173,11 +164,15 @@ export async function tryReadFileInContainer(
   if (!cp) return { ok: false };
 
   try {
-    const result = await execInContainer(session.containerId, 'node', ['-e', `
+    const result = await execInContainer(session.containerId, 'node', [
+      '-e',
+      `
       const fs = require('fs');
       const data = fs.readFileSync(process.argv[1], 'utf-8');
       process.stdout.write(data);
-    `, cp]);
+    `,
+      cp,
+    ]);
     if (result.exitCode === 0) {
       return { ok: true, data: result.stdout };
     }
@@ -192,7 +187,7 @@ export async function tryReadFileInContainer(
  */
 export async function tryReadFileBufferInContainer(
   conversationId: string | undefined,
-  filePath: string,
+  filePath: string
 ): Promise<{ ok: true; data: ArrayBuffer } | { ok: false }> {
   const session = await resolveSessionForPath(conversationId, filePath);
   if (!session) return { ok: false };
@@ -219,7 +214,7 @@ export async function tryReadFileBufferInContainer(
 export async function tryWriteFileInContainer(
   conversationId: string | undefined,
   filePath: string,
-  data: string,
+  data: string
 ): Promise<boolean> {
   const session = await resolveSessionForPath(conversationId, filePath);
   if (!session) return false;
@@ -231,15 +226,16 @@ export async function tryWriteFileInContainer(
     const parent = cp.substring(0, cp.lastIndexOf('/'));
     await execInContainer(session.containerId, 'mkdir', ['-p', parent]);
 
-    const result = await execInContainer(
-      session.containerId,
-      'node',
-      ['-e', `
+    const result = await execInContainer(session.containerId, 'node', [
+      '-e',
+      `
         const fs = require('fs');
         const data = Buffer.from(process.argv[2], 'base64');
         fs.writeFileSync(process.argv[1], data);
-      `, cp, Buffer.from(data).toString('base64')],
-    );
+      `,
+      cp,
+      Buffer.from(data).toString('base64'),
+    ]);
     return result.exitCode === 0;
   } catch {
     return false;
@@ -258,7 +254,7 @@ export interface IFileMetadataResult {
 
 export async function tryGetFileMetadataInContainer(
   conversationId: string | undefined,
-  filePath: string,
+  filePath: string
 ): Promise<{ ok: true; data: IFileMetadataResult } | { ok: false }> {
   const session = await resolveSessionForPath(conversationId, filePath);
   if (!session) return { ok: false };
@@ -266,7 +262,9 @@ export async function tryGetFileMetadataInContainer(
   if (!cp) return { ok: false };
 
   try {
-    const result = await execInContainer(session.containerId, 'node', ['-e', `
+    const result = await execInContainer(session.containerId, 'node', [
+      '-e',
+      `
       const fs = require('fs');
       const s = fs.statSync(process.argv[1]);
       console.log(JSON.stringify({
@@ -275,7 +273,9 @@ export async function tryGetFileMetadataInContainer(
         isDirectory: s.isDirectory(),
         isFile: s.isFile(),
       }));
-    `, cp]);
+    `,
+      cp,
+    ]);
     if (result.exitCode === 0) {
       try {
         return { ok: true, data: JSON.parse(result.stdout) };
@@ -294,7 +294,7 @@ export async function tryGetFileMetadataInContainer(
  */
 export async function tryRemoveEntryInContainer(
   conversationId: string | undefined,
-  filePath: string,
+  filePath: string
 ): Promise<boolean> {
   const session = await resolveSessionForPath(conversationId, filePath);
   if (!session) return false;
@@ -315,7 +315,7 @@ export async function tryRemoveEntryInContainer(
 export async function tryRenameEntryInContainer(
   conversationId: string | undefined,
   filePath: string,
-  newName: string,
+  newName: string
 ): Promise<{ ok: true; newPath: string } | { ok: false }> {
   const session = await resolveSessionForPath(conversationId, filePath);
   if (!session) return { ok: false };
@@ -341,15 +341,20 @@ export async function tryRenameEntryInContainer(
  */
 export async function tryGetFilesByDirInContainer(
   conversationId: string | undefined,
-  dirPath: string,
-): Promise<{ ok: true; data: Array<{ name: string; fullPath: string; relativePath: string; isDir: boolean; isFile: boolean }> } | { ok: false }> {
+  dirPath: string
+): Promise<
+  | { ok: true; data: Array<{ name: string; fullPath: string; relativePath: string; isDir: boolean; isFile: boolean }> }
+  | { ok: false }
+> {
   const session = await resolveSessionForPath(conversationId, dirPath);
   if (!session) return { ok: false };
   const cp = toContainerPath(dirPath);
   if (!cp) return { ok: false };
 
   try {
-    const result = await execInContainer(session.containerId, 'node', ['-e', `
+    const result = await execInContainer(session.containerId, 'node', [
+      '-e',
+      `
       const fs = require('fs');
       const path = require('path');
       function walk(dir, base) {
@@ -381,7 +386,9 @@ export async function tryGetFilesByDirInContainer(
         return entries;
       }
       console.log(JSON.stringify(walk(process.argv[1], '')));
-    `, cp]);
+    `,
+      cp,
+    ]);
     if (result.exitCode === 0) {
       try {
         return { ok: true, data: JSON.parse(result.stdout) };
@@ -400,7 +407,7 @@ export async function tryGetFilesByDirInContainer(
  */
 export async function tryGetImageBase64InContainer(
   conversationId: string | undefined,
-  filePath: string,
+  filePath: string
 ): Promise<{ ok: true; data: string } | { ok: false }> {
   const session = await resolveSessionForPath(conversationId, filePath);
   if (!session) return { ok: false };
@@ -435,7 +442,7 @@ export async function tryGetImageBase64InContainer(
 export async function tryCreateZipInContainer(
   conversationId: string | undefined,
   zipPath: string,
-  files: Array<{ path: string; content?: string }>,
+  files: Array<{ path: string; content?: string }>
 ): Promise<boolean> {
   const session = await resolveSessionForPath(conversationId, zipPath);
   if (!session) return false;
@@ -444,15 +451,16 @@ export async function tryCreateZipInContainer(
 
   try {
     // Use node to create zip in container
-    const fileJson = JSON.stringify(files.map(f => ({
-      path: toContainerPath(f.path) || f.path,
-      content: f.content,
-    })));
+    const fileJson = JSON.stringify(
+      files.map((f) => ({
+        path: toContainerPath(f.path) || f.path,
+        content: f.content,
+      }))
+    );
 
-    const result = await execInContainer(
-      session.containerId,
-      'node',
-      ['-e', `
+    const result = await execInContainer(session.containerId, 'node', [
+      '-e',
+      `
         const fs = require('fs');
         const path = require('path');
         const zipPath = process.argv[1];
@@ -487,8 +495,10 @@ export async function tryCreateZipInContainer(
           throw new Error('Compression failed');
         }
         fs.rmSync(tmpDir, { recursive: true, force: true });
-      `, cp, fileJson],
-    );
+      `,
+      cp,
+      fileJson,
+    ]);
     return result.exitCode === 0;
   } catch {
     return false;
@@ -506,7 +516,7 @@ function pathExt(p: string): string {
 export async function tryCopyFilesToWorkspaceInContainer(
   conversationId: string | undefined,
   filePaths: string[],
-  workspace: string,
+  workspace: string
 ): Promise<boolean> {
   const session = await resolveSessionForPath(conversationId, workspace);
   if (!session) return false;
@@ -526,14 +536,15 @@ export async function tryCopyFilesToWorkspaceInContainer(
       // Read file from host, write into container
       const { execSync } = await import('child_process');
       const content = execSync(`cat "${fp}"`, { encoding: 'utf-8' });
-      await execInContainer(
-        session.containerId,
-        'node',
-        ['-e', `
+      await execInContainer(session.containerId, 'node', [
+        '-e',
+        `
           const fs = require('fs');
           fs.writeFileSync(process.argv[1], Buffer.from(process.argv[2], 'base64'));
-        `, destPath, Buffer.from(content).toString('base64')],
-      );
+        `,
+        destPath,
+        Buffer.from(content).toString('base64'),
+      ]);
     }
     return true;
   } catch {
@@ -546,14 +557,16 @@ export async function tryCopyFilesToWorkspaceInContainer(
  */
 export async function tryListWorkspaceFilesInContainer(
   conversationId: string | undefined,
-  rootPath: string,
+  rootPath: string
 ): Promise<{ ok: true; data: Array<{ name: string; fullPath: string; relativePath: string }> } | { ok: false }> {
   const session = await resolveSessionForPath(conversationId, rootPath);
   if (!session) return { ok: false };
   const cp = toContainerPath(rootPath) || CONTAINER_WORKSPACE;
 
   try {
-    const result = await execInContainer(session.containerId, 'node', ['-e', `
+    const result = await execInContainer(session.containerId, 'node', [
+      '-e',
+      `
       const fs = require('fs');
       const path = require('path');
       function walk(dir, base) {
@@ -583,7 +596,9 @@ export async function tryListWorkspaceFilesInContainer(
         return entries;
       }
       console.log(JSON.stringify(walk(process.argv[1], '')));
-    `, cp]);
+    `,
+      cp,
+    ]);
     if (result.exitCode === 0) {
       try {
         return { ok: true, data: JSON.parse(result.stdout) };
