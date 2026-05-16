@@ -57,6 +57,7 @@ function getCsrfSecret(): string {
   // 生成随机 32 字符密钥（16 字节的 hex 编码）
   // Generate random 32-character secret (16 bytes hex encoded)
   const randomSecret = crypto.randomBytes(16).toString('hex');
+  process.env.CSRF_SECRET = randomSecret;
   console.log('[security] Generated random CSRF secret for this session');
   return randomSecret;
 }
@@ -112,7 +113,7 @@ function normalizeOrigin(origin: string): string | null {
     }
     const portSuffix = url.port ? `:${url.port}` : '';
     return `${url.protocol}//${url.hostname}${portSuffix}`;
-  } catch (error) {
+  } catch {
     return null;
   }
 }

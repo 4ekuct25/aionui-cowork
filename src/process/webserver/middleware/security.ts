@@ -132,7 +132,7 @@ export function attachCsrfToken(req: Request, res: Response, next: NextFunction)
   // is missing, and pin req.csrfToken() to stop further rotation.
   if (typeof req.csrfToken === 'function') {
     const existingCookie = req.signedCookies?.csrfToken;
-    let token: string;
+    let token: string | null = null;
     if (existingCookie) {
       // Cookie exists — do NOT call req.csrfToken() which would rotate it.
       // Instead, decrypt the cookie to get the UUID for the header.
@@ -148,6 +148,11 @@ export function attachCsrfToken(req: Request, res: Response, next: NextFunction)
     }
     res.setHeader(CSRF_HEADER_NAME, token);
     res.locals.csrfToken = token;
+    res.cookie(CSRF_COOKIE_NAME, token, {
+      ...SECURITY_CONFIG.CSRF.COOKIE_OPTIONS,
+      secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
+      maxAge: 300000,
+    });
 
     // Ensure the cookie is always present in the response. tiny-csrf clears
     // it (sets to null) after successful POST verification. If we don't
@@ -156,18 +161,20 @@ export function attachCsrfToken(req: Request, res: Response, next: NextFunction)
     const pendingCookies = (rawHeaders['set-cookie'] as string[]) || [];
     const clearingCsrf = Array.isArray(pendingCookies)
       ? pendingCookies.some((c) => String(c).startsWith('csrfToken=;') || String(c).startsWith('csrfToken=null'))
-      : (String(pendingCookies).startsWith('csrfToken=;') || String(pendingCookies).startsWith('csrfToken=null'));
+      : String(pendingCookies).startsWith('csrfToken=;') || String(pendingCookies).startsWith('csrfToken=null');
     if (clearingCsrf) {
       // tiny-csrf scheduled the cookie for deletion. Re-issue it so the
       // client has a valid token for subsequent requests.
       const { encryptCookie } = require('tiny-csrf/encryption');
       const secret = process.env.CSRF_SECRET;
       if (secret) {
-        res.cookie(
-          'csrfToken',
-          encryptCookie(token, secret),
-          { httpOnly: true, sameSite: 'strict', signed: true, maxAge: 300000 }
-        );
+        res.cookie('csrfToken', encryptCookie(token, secret), {
+          httpOnly: true,
+          sameSite: 'strict',
+          signed: true,
+          path: '/',
+          maxAge: 300000,
+        });
       }
     }
   }
