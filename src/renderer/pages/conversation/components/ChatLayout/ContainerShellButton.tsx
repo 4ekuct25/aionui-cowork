@@ -27,13 +27,7 @@ export function ContainerShellButton({ conversationId }: { conversationId?: stri
 
   return (
     <>
-      <Button
-        size='mini'
-        type='secondary'
-        shape='round'
-        onClick={handleOpen}
-        style={{ fontSize: '12px' }}
-      >
+      <Button size='mini' type='secondary' shape='round' onClick={handleOpen} style={{ fontSize: '12px' }}>
         ⬢ Shell
       </Button>
 

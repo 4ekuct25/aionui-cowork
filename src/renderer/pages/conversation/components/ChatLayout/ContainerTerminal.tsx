@@ -80,9 +80,7 @@ export default function ContainerTerminal({
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = location.host;
 
-    const ws = new WebSocket(
-      `${protocol}//${host}/api/sessions/${conversationId}/shell`,
-    );
+    const ws = new WebSocket(`${protocol}//${host}/api/sessions/${conversationId}/shell`);
     wsRef.current = ws;
 
     ws.binaryType = 'arraybuffer';

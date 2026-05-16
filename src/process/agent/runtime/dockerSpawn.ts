@@ -5,7 +5,8 @@
  */
 
 import { EventEmitter } from 'events';
-import { PassThrough, Writable, type Readable } from 'stream';
+import type { Writable } from 'stream';
+import { PassThrough, type Readable } from 'stream';
 import * as net from 'net';
 import Docker, { type Container } from 'dockerode';
 
@@ -176,9 +177,20 @@ export function dockerSpawn(command: string, args: string[], options: DockerSpaw
       // Write script + decode env from base64 to avoid shell quoting issues entirely
       const writeScript = `echo "${relayB64}" | base64 -d > /tmp/aionrs-relay.js`;
       const envDecode = `echo "${envJsonB64}" | base64 -d > /tmp/aionrs-env.json`;
-      console.error('[dockerSpawn] Executing in container', options.containerId.substring(0, 12), 'cmd:', command, 'args:', args.join(' '));
+      console.error(
+        '[dockerSpawn] Executing in container',
+        options.containerId.substring(0, 12),
+        'cmd:',
+        command,
+        'args:',
+        args.join(' ')
+      );
       const startExec = await container.exec({
-        Cmd: ['/bin/sh', '-c', `${writeScript} && ${envDecode} && node /tmp/aionrs-relay.js ${command} ${args.join(' ')} /tmp/aionrs-env.json ${cwd} ${portFile} &`],
+        Cmd: [
+          '/bin/sh',
+          '-c',
+          `${writeScript} && ${envDecode} && node /tmp/aionrs-relay.js ${command} ${args.join(' ')} /tmp/aionrs-env.json ${cwd} ${portFile} &`,
+        ],
         AttachStdout: true,
         AttachStderr: true,
         Tty: false,
@@ -191,7 +203,12 @@ export function dockerSpawn(command: string, args: string[], options: DockerSpaw
           console.error('[dockerSpawn] Exec output:', s.substring(0, 300));
         }
       } catch (execErr: any) {
-        console.error('[dockerSpawn] Exec start error:', execErr.message, execErr.statusCode, JSON.stringify(execErr.json ?? {}).substring(0, 300));
+        console.error(
+          '[dockerSpawn] Exec start error:',
+          execErr.message,
+          execErr.statusCode,
+          JSON.stringify(execErr.json ?? {}).substring(0, 300)
+        );
         throw execErr;
       }
 
@@ -305,20 +322,34 @@ export function dockerSpawn(command: string, args: string[], options: DockerSpaw
   }
 
   return {
-    get pid() { return pid; },
+    get pid() {
+      return pid;
+    },
     stdin: stdinPassthrough,
     stdout,
     stderr,
-    get killed() { return killRequested || exited; },
+    get killed() {
+      return killRequested || exited;
+    },
     unref() {},
     kill(signal?: NodeJS.Signals | number): boolean {
       killRequested = true;
       killSignalUsed = signal;
-      try { stdinPassthrough.end(); } catch { /* ignore */ }
+      try {
+        stdinPassthrough.end();
+      } catch {
+        /* ignore */
+      }
       return true;
     },
-    on(event, listener) { emitter.on(event, listener); },
-    once(event, listener) { emitter.once(event, listener); },
-    off(event, listener) { emitter.off(event, listener); },
+    on(event, listener) {
+      emitter.on(event, listener);
+    },
+    once(event, listener) {
+      emitter.once(event, listener);
+    },
+    off(event, listener) {
+      emitter.off(event, listener);
+    },
   };
 }

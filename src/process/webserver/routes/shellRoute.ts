@@ -16,7 +16,9 @@ function parseDockerHost(env: string | undefined): import('dockerode').DockerOpt
       const port = Number(url.port) || (url.protocol === 'https:' ? 2376 : 2375);
       return { host: url.hostname, port, protocol: url.protocol === 'https:' ? 'https' : 'http' };
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return null;
 }
 
@@ -28,21 +30,24 @@ function getDocker(): Docker {
   return _docker;
 }
 
-export async function attachShellToContainer(
-  ws: WebSocket,
-  containerId: string,
-): Promise<void> {
+export async function attachShellToContainer(ws: WebSocket, containerId: string): Promise<void> {
   console.log('[shellRoute] attachShellToContainer for container', containerId);
   const d = getDocker();
   const container = d.getContainer(containerId);
 
   // Start a long-running bash process in the container
   // Kill old shell servers
-  await container.exec({
-    Cmd: ['sh', '-c', 'for pid in $(ls /proc 2>/dev/null | grep -E "^[0-9]+$"); do if [ -f /proc/$pid/cmdline ] && tr "\\0" " " < /proc/$pid/cmdline 2>/dev/null | grep -q "shell-server"; then kill $pid 2>/dev/null; fi; done; rm -f /tmp/shell-ws'],
-    AttachStdout: false,
-    AttachStderr: false,
-  }).then((e) => e.start({ hijack: false }).then(() => new Promise(r => setTimeout(r, 1000))));
+  await container
+    .exec({
+      Cmd: [
+        'sh',
+        '-c',
+        'for pid in $(ls /proc 2>/dev/null | grep -E "^[0-9]+$"); do if [ -f /proc/$pid/cmdline ] && tr "\\0" " " < /proc/$pid/cmdline 2>/dev/null | grep -q "shell-server"; then kill $pid 2>/dev/null; fi; done; rm -f /tmp/shell-ws',
+      ],
+      AttachStdout: false,
+      AttachStderr: false,
+    })
+    .then((e) => e.start({ hijack: false }).then(() => new Promise((r) => setTimeout(r, 1000))));
 
   // Write shell server to file (avoids inline quoting issues)
   const serverScript =
@@ -63,11 +68,13 @@ export async function attachShellToContainer(
 
   // Write script to file
   const writeB64 = Buffer.from(serverScript).toString('base64');
-  await container.exec({
-    Cmd: ['sh', '-c', `echo '${writeB64}' | base64 -d > /tmp/shell-server.js`],
-    AttachStdout: false,
-    AttachStderr: false,
-  }).then((e) => e.start({ hijack: false }));
+  await container
+    .exec({
+      Cmd: ['sh', '-c', `echo '${writeB64}' | base64 -d > /tmp/shell-server.js`],
+      AttachStdout: false,
+      AttachStderr: false,
+    })
+    .then((e) => e.start({ hijack: false }));
 
   // Start the shell server
   const exec = await container.exec({
@@ -111,7 +118,7 @@ export async function attachShellToContainer(
       });
       const out = await drainExec(checkExec);
       const trimmed = out.trim();
-      console.log(`[shellRoute] Port check attempt ${i+1}: "${trimmed.substring(0, 60)}"`);
+      console.log(`[shellRoute] Port check attempt ${i + 1}: "${trimmed.substring(0, 60)}"`);
       if (trimmed.includes('NOFILE')) continue;
       const jsonMatch = trimmed.match(/\{[^}]+\}/);
       if (!jsonMatch) continue;
@@ -121,7 +128,7 @@ export async function attachShellToContainer(
         break;
       }
     } catch (err) {
-      console.log(`[shellRoute] Port check attempt ${i+1} failed:`, (err as Error).message);
+      console.log(`[shellRoute] Port check attempt ${i + 1} failed:`, (err as Error).message);
     }
   }
 
@@ -142,7 +149,10 @@ export async function attachShellToContainer(
   let containerIp: string | null = networks['aionui-cowork_default']?.IPAddress || null;
   if (!containerIp) {
     for (const [name, nw] of Object.entries(networks)) {
-      if (nw.IPAddress && name !== 'bridge') { containerIp = nw.IPAddress; break; }
+      if (nw.IPAddress && name !== 'bridge') {
+        containerIp = nw.IPAddress;
+        break;
+      }
     }
   }
   if (!containerIp) containerIp = info.NetworkSettings?.IPAddress || '127.0.0.1';
