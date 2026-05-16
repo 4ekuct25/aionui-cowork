@@ -45,20 +45,26 @@ export class WebSocketManager {
   ): void {
     this.wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
       const url = new URL(req.url || '/', `http://${req.headers.host}`);
+      console.log('[WebSocketManager] Connection from', req.connection.remoteAddress, 'url=', url.pathname);
 
       // Check if this is a shell connection
       const shellMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/shell$/);
       if (shellMatch && onShell) {
+        console.log('[WebSocketManager] Shell connection detected for conversation', shellMatch[1]);
         const conversationId = shellMatch[1];
         const token = TokenMiddleware.extractWebSocketToken(req);
+        console.log('[WebSocketManager] Shell token present:', !!token);
 
         if (!token || !(await TokenMiddleware.validateWebSocketToken(token))) {
+          console.log('[WebSocketManager] Shell auth failed, token=', token ? token.substring(0, 20) + '...' : 'null', 'closing');
           ws.close(WEBSOCKET_CONFIG.CLOSE_CODES.POLICY_VIOLATION, 'Authentication required');
           return;
         }
 
         try {
+          console.log('[WebSocketManager] Calling onShell for', conversationId);
           await onShell(ws, conversationId, req);
+          console.log('[WebSocketManager] onShell completed for', conversationId);
         } catch (err) {
           console.error('[WebSocketManager] Shell error:', err);
           ws.close(1011, 'Internal error');

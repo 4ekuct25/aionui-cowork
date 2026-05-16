@@ -79,14 +79,9 @@ export default function ContainerTerminal({
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = location.host;
-    const token = document.cookie
-      .split(';')
-      .find((c) => c.trim().startsWith('admin_token='))
-      ?.split('=')[1];
 
     const ws = new WebSocket(
-      `${protocol}//${host}/api/sessions/${conversationId}/shell?token=${encodeURIComponent(token || '')}`,
-      ['binary'],
+      `${protocol}//${host}/api/sessions/${conversationId}/shell`,
     );
     wsRef.current = ws;
 
@@ -94,7 +89,6 @@ export default function ContainerTerminal({
 
     ws.onopen = () => {
       sendResize(term);
-      term.write('\x1b[32m[container shell]\x1b[0m Run commands inside the session container.\n\n');
     };
 
     ws.onmessage = (event) => {
@@ -114,9 +108,10 @@ export default function ContainerTerminal({
       term.write('\r\n\x1b[31m[shell error] Failed to connect to container.\x1b[0m\r\n');
     };
 
+    const encoder = new TextEncoder();
     term.onData((data: string) => {
       if (ws.readyState === 1) {
-        ws.send(data);
+        ws.send(encoder.encode(data));
       }
     });
 

@@ -6,53 +6,93 @@
 
 import { EventEmitter } from 'events';
 import { PassThrough, Writable, type Readable } from 'stream';
-import Docker, { type Container, type Exec } from 'dockerode';
+import * as net from 'net';
+import Docker, { type Container } from 'dockerode';
 
 /**
  * Subset of `node:child_process` ChildProcess that agent code actually uses.
- *
- * The fields are deliberately minimal — `aionrs` and the ACP connectors
- * touch `stdin.write`, `stdout`/`stderr` as streams, `kill()`, and the
- * `'exit'` / `'error'` events. They never call `unref`, `disconnect`,
- * `send`, etc., so we don't have to fake the long tail of ChildProcess
- * surface.
  */
 export type ChildProcessLike = {
   pid: number | null;
-  /** Always present and writable while the process is alive. */
   stdin: Writable;
-  /** Demultiplexed stdout from `docker exec` (TTY-off). */
   stdout: Readable;
-  /** Demultiplexed stderr from `docker exec`. */
   stderr: Readable;
-  /** Mirrors ChildProcess.killed — true once kill() has been called. */
   readonly killed: boolean;
-  /** Send a kill signal. Best-effort — see implementation note in kill(). */
   kill: (signal?: NodeJS.Signals | number) => boolean;
-  /** Node-style event registration. Emits 'exit' (code, signal), 'error', 'close'. */
   on: (event: 'exit' | 'close' | 'error', listener: (...args: unknown[]) => void) => void;
   once: (event: 'exit' | 'close' | 'error', listener: (...args: unknown[]) => void) => void;
   off: (event: 'exit' | 'close' | 'error', listener: (...args: unknown[]) => void) => void;
-  /** Decouple stdio from parent lifecycle — no-op for docker exec but kept for API parity with ChildProcess.unref(). */
   unref?: () => void;
 };
 
 export type DockerSpawnOptions = {
-  /** Session container ID resolved by DockerSessionManager. */
   containerId: string;
-  /** Optional env vars merged with the container's defaults. */
   env?: Record<string, string>;
-  /** Working directory inside the container. Defaults to /workspace. */
   cwd?: string;
-  /** Reused dockerode handle when present; otherwise a new one is created. */
   docker?: Docker;
 };
 
 /**
- * Singleton handle so all dockerSpawn calls share one keep-alive agent.
- * Honours DOCKER_HOST so the control-plane can go through
- * tecnativa/docker-socket-proxy (Phase 8.2) instead of /var/run/docker.sock.
+ * Node.js relay script spawned inside the container. Accepts TCP connections,
+ * spawns the target command, and multiplexes stdio:
+ *   - TCP input → child.stdin
+ *   - child.stdout → TCP frames: 0x01 + uint32be(len) + data
+ *   - child.stderr → TCP frames: 0x02 + uint32be(len) + data
+ *   - child exit → TCP frame: 0x03 + JSON({code})
  */
+const RELAY_SCRIPT = `
+var net=require('net'),cp=require('child_process'),fs=require('fs');
+var all=process.argv.slice(2);
+var portFile=all[all.length-1],cwd=all[all.length-2],envObj=JSON.parse(all[all.length-3]||'{}');
+var cmd=all[0],args=all.slice(1,all.length-3);
+var child=cp.spawn(cmd,args,{stdio:['pipe','pipe','pipe'],cwd:cwd,env:Object.assign({},process.env,envObj),shell:false});
+var srv=net.createServer(function(s){
+  s.on('data',function(d){child.stdin.write(d)});
+  s.on('end',function(){child.stdin.end()});
+  child.stdout.on('data',function(d){s.write(Buffer.concat([Buffer.from([1]),u32(d.length),d]))});
+  child.stderr.on('data',function(d){s.write(Buffer.concat([Buffer.from([2]),u32(d.length),d]))});
+  child.on('exit',function(code){
+    s.write(Buffer.concat([Buffer.from([3]),Buffer.from(JSON.stringify({c:code}))]));
+    s.end();
+  });
+});
+srv.listen(0,'0.0.0.0',function(){
+  fs.writeFileSync(portFile,String(srv.address().port));
+});
+function u32(n){var b=Buffer.alloc(4);b.writeUInt32BE(n,0);return b}
+`;
+
+/**
+ * Strip Docker HDLC framing bytes from non-hijacked exec stream output.
+ */
+function drainExec(stream: Readable, timeoutMs = 3000): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => {
+      finalize();
+      resolve(Buffer.concat(chunks).length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0));
+    }, timeoutMs);
+    const finalize = () => {
+      clearTimeout(timer);
+      stream.removeAllListeners('data');
+      stream.removeAllListeners('end');
+      stream.removeAllListeners('error');
+    };
+    stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+    stream.on('end', () => {
+      finalize();
+      const raw = Buffer.concat(chunks);
+      let start = 0;
+      while (start < raw.length && (raw[start] > 127 || raw[start] < 32)) start++;
+      resolve(start < raw.length ? raw.slice(start) : raw);
+    });
+    stream.on('error', (err) => {
+      finalize();
+      reject(err);
+    });
+  });
+}
+
 function parseDockerHost(env: string | undefined): import('dockerode').DockerOptions | null {
   if (!env) return null;
   try {
@@ -63,7 +103,7 @@ function parseDockerHost(env: string | undefined): import('dockerode').DockerOpt
       return { host: url.hostname, port, protocol: url.protocol === 'https:' ? 'https' : 'http' };
     }
   } catch {
-    // ignore — fall through to the dockerode default
+    return null;
   }
   return null;
 }
@@ -76,167 +116,202 @@ function getDocker(): Docker {
   return _docker;
 }
 
-/** For tests — inject a stub docker. Reset by passing null. */
 export function __setDockerForSpawnTests(docker: Docker | null): void {
   _docker = docker;
 }
 
+async function getContainerIP(docker: Docker, containerId: string): Promise<string> {
+  const c = docker.getContainer(containerId);
+  const info = await c.inspect();
+  const nets = (info.NetworkSettings as { Networks?: Record<string, { IPAddress?: string }> }).Networks;
+  if (!nets) return '127.0.0.1';
+  const main = nets['aionui-cowork_default'];
+  if (main?.IPAddress) return main.IPAddress;
+  for (const n of Object.values(nets)) {
+    if (n.IPAddress) return n.IPAddress;
+  }
+  return '127.0.0.1';
+}
+
+function shellQuote(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 /**
- * Launch a process inside an existing session container, exposing a
- * ChildProcess-like API so existing agent code (aionrs, ACP connectors)
- * can swap host `child_process.spawn` for this with minimal change.
+ * Launch a process inside an existing session container using a TCP relay
+ * to avoid the docker-socket-proxy's hijacked TTY limitation.
  *
- * Returns synchronously — the underlying `docker exec` start round-trip
- * happens asynchronously, but writes to `stdin` made before the stream
- * attaches are buffered and drained when it does.
- *
- * Stdout/stderr arrive via dockerode's demuxStream helper; consumers see
- * them as plain Readable streams.
+ * Tecnativa docker-socket-proxy with SESSION=0 blocks hijacked connections
+ * (exec.start({ hijack: true })), so we use a TCP-based approach instead:
+ * 1. Write relay script to container via base64-encoded detached exec
+ * 2. Start relay (spawns target cmd, listens on random TCP port)
+ * 3. Poll /tmp/aionrs-relay-port for the assigned port
+ * 4. Connect via TCP from control-plane → relay → target process
  */
 export function dockerSpawn(command: string, args: string[], options: DockerSpawnOptions): ChildProcessLike {
   const docker = options.docker ?? getDocker();
-  const container: Container = docker.getContainer(options.containerId);
-
   const stdinPassthrough = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   const emitter = new EventEmitter();
 
-  let upstreamStdin: Writable | null = null;
   let exited = false;
   let killRequested = false;
   let killSignalUsed: NodeJS.Signals | number | undefined;
   let pid: number | null = null;
-  // Buffer writes until exec.start resolves. The PassThrough naturally
-  // queues but we explicitly forward chunks once upstreamStdin attaches so
-  // backpressure is preserved end-to-end.
-  const pending: Buffer[] = [];
+  let tcpSocket: net.Socket | null = null;
 
-  stdinPassthrough.on('data', (chunk: Buffer) => {
-    if (upstreamStdin) {
-      upstreamStdin.write(chunk);
-    } else {
-      pending.push(chunk);
-    }
-  });
-  stdinPassthrough.on('end', () => {
-    if (upstreamStdin) upstreamStdin.end();
-  });
+  const cwd = options.cwd ?? '/workspace';
+  const portFile = '/tmp/aionrs-relay-port';
+  const relayB64 = Buffer.from(RELAY_SCRIPT).toString('base64');
+  const envWithHome = Object.assign({}, options.env, { HOME: '/tmp' });
+  const envJson = JSON.stringify(envWithHome);
 
-  const envArray = Object.entries(options.env ?? {})
-    .filter(([, v]) => v !== undefined)
-    .map(([k, v]) => `${k}=${v}`);
+  const shellArgs = [shellQuote(command), ...args.map(shellQuote), shellQuote(envJson), shellQuote(cwd), shellQuote(portFile)].join(' ');
 
   void (async () => {
-    let exec: Exec | null = null;
     try {
-      exec = await container.exec({
-        Cmd: [command, ...args],
-        AttachStdin: true,
+      // Step 1: Write relay script and start it via detached exec
+      const container: Container = docker.getContainer(options.containerId);
+      const startExec = await container.exec({
+        Cmd: ['/bin/sh', '-c', `echo '${relayB64}' | base64 -d > /tmp/aionrs-relay.js && node /tmp/aionrs-relay.js ${shellArgs} &`],
         AttachStdout: true,
         AttachStderr: true,
         Tty: false,
-        WorkingDir: options.cwd ?? '/workspace',
-        Env: envArray,
       });
-
-      const stream = await exec.start({ hijack: true, stdin: true });
-      upstreamStdin = stream as unknown as Writable;
-      // Flush any pre-attach writes.
-      while (pending.length > 0) {
-        upstreamStdin.write(pending.shift()!);
+      const startStream = await startExec.start({ hijack: false });
+      const startData = await drainExec(startStream as unknown as Readable);
+      if (startData.length > 0) {
+        const s = startData.toString();
+        if (s.includes('Error') || s.includes('error')) {
+          console.error('[dockerSpawn] Relay start error:', s.substring(0, 300));
+        }
       }
 
-      docker.modem.demuxStream(stream as unknown as NodeJS.ReadableStream, stdout, stderr);
+      // Step 2: Get container IP for TCP connection
+      const containerIP = await getContainerIP(docker, options.containerId).catch(() => '127.0.0.1');
 
-      (stream as unknown as Readable).on('end', () => {
-        void finishWithInspect(exec!);
-      });
-      (stream as unknown as Readable).on('error', (err: Error) => {
-        if (!exited) emitter.emit('error', err);
+      // Step 3: Poll for relay port
+      let port = 0;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        await new Promise((r) => setTimeout(r, 200));
+        const portExec = await container.exec({
+          Cmd: ['/bin/sh', '-c', `cat ${portFile} 2>/dev/null || echo ""`],
+          AttachStdout: true,
+          Tty: false,
+        });
+        const portStream = await portExec.start({ hijack: false });
+        const portData = await drainExec(portStream as unknown as Readable);
+        const portStr = portData.toString().trim();
+        if (portStr && parseInt(portStr, 10) > 0) {
+          port = parseInt(portStr, 10);
+          break;
+        }
+      }
+
+      if (!port) {
+        throw new Error('Relay port not found in /tmp/aionrs-relay-port');
+      }
+
+      // Step 4: Connect via TCP to relay
+      tcpSocket = net.createConnection({ host: containerIP, port }, () => {
+        // Connected, stdio piping starts
       });
 
-      // Container exec doesn't surface a host PID, but `exec.inspect` does
-      // after start. Resolve it best-effort so consumers that just want to
-      // log a number don't see `null`.
+      // Demux incoming frames
+      let buf = Buffer.alloc(0);
+      tcpSocket.on('data', (chunk: Buffer) => {
+        buf = Buffer.concat([buf, chunk]);
+        while (buf.length >= 5) {
+          const streamId = buf[0];
+          if (streamId === 0x03) {
+            try {
+              const exitJson = buf.slice(1).toString();
+              const exitData = JSON.parse(exitJson);
+              finishWithCode(exitData.c ?? 1);
+            } catch {
+              finishWithCode(1);
+            }
+            buf = Buffer.alloc(0);
+            break;
+          }
+          const dataLen = buf.readUInt32BE(1);
+          if (buf.length < 5 + dataLen) break;
+          const data = buf.slice(5, 5 + dataLen);
+          buf = buf.slice(5 + dataLen);
+          if (streamId === 0x01) {
+            stdout.write(data);
+          } else if (streamId === 0x02) {
+            stderr.write(data);
+          }
+        }
+      });
+
+      tcpSocket.on('error', (err: Error) => {
+        if (!exited) {
+          console.error('[dockerSpawn] TCP relay error:', err.message);
+          emitter.emit('error', err);
+          finishWithCode(1);
+        }
+      });
+
+      tcpSocket.on('end', () => {
+        if (!exited) finishWithCode(null);
+      });
+
+      // stdinPassthrough → TCP
+      stdinPassthrough.on('data', (chunk: Buffer) => {
+        if (tcpSocket && !tcpSocket.destroyed) {
+          tcpSocket.write(chunk);
+        }
+      });
+      stdinPassthrough.on('end', () => {
+        if (tcpSocket && !tcpSocket.destroyed) {
+          tcpSocket.end();
+        }
+      });
+
+      // Get PID from exec inspect
       try {
-        const info = await exec.inspect();
-        const inspectPid = (info as unknown as { Pid?: number }).Pid;
+        const execInfo = await startExec.inspect();
+        const inspectPid = (execInfo as unknown as { Pid?: number }).Pid;
         if (typeof inspectPid === 'number' && inspectPid > 0) {
           pid = inspectPid;
         }
       } catch {
-        // ignore — pid is purely informational
+        // ignore
       }
     } catch (err) {
+      console.error('[dockerSpawn] Failed to spawn via relay:', err);
       emitter.emit('error', err as Error);
-      exited = true;
-      emitter.emit('exit', 1, null);
-      emitter.emit('close', 1, null);
-      stdout.end();
-      stderr.end();
+      if (!exited) finishWithCode(1);
     }
   })();
 
-  async function finishWithInspect(exec: Exec): Promise<void> {
+  function finishWithCode(code: number | null) {
     if (exited) return;
     exited = true;
-    let exitCode: number | null = null;
-    try {
-      const info = await exec.inspect();
-      exitCode = typeof info.ExitCode === 'number' ? info.ExitCode : killRequested ? 0 : 1;
-    } catch {
-      exitCode = killRequested ? 0 : 1;
-    }
-    emitter.emit('exit', exitCode, killSignalUsed ?? null);
-    emitter.emit('close', exitCode, killSignalUsed ?? null);
+    emitter.emit('exit', code, killSignalUsed ?? null);
+    emitter.emit('close', code, killSignalUsed ?? null);
     stdout.end();
     stderr.end();
   }
 
   return {
-    get pid() {
-      return pid;
-    },
+    get pid() { return pid; },
     stdin: stdinPassthrough,
     stdout,
     stderr,
-    get killed() {
-      return killRequested || exited;
-    },
-    unref() {
-      // No-op — docker exec doesn't keep the parent event loop alive.
-    },
+    get killed() { return killRequested || exited; },
+    unref() {},
     kill(signal?: NodeJS.Signals | number): boolean {
-      // `docker exec` doesn't expose a clean signal-delivery API through
-      // dockerode (the underlying engine endpoint exists but is awkward).
-      // We close stdin which is the agreed-upon shutdown contract for our
-      // workers (see pipe.ts), and rely on container teardown for any
-      // process that ignores stdin EOF.
       killRequested = true;
       killSignalUsed = signal;
-      try {
-        stdinPassthrough.end();
-      } catch {
-        // ignore
-      }
-      if (upstreamStdin) {
-        try {
-          upstreamStdin.end();
-        } catch {
-          // ignore
-        }
-      }
+      try { stdinPassthrough.end(); } catch { /* ignore */ }
       return true;
     },
-    on(event, listener) {
-      emitter.on(event, listener);
-    },
-    once(event, listener) {
-      emitter.once(event, listener);
-    },
-    off(event, listener) {
-      emitter.off(event, listener);
-    },
+    on(event, listener) { emitter.on(event, listener); },
+    once(event, listener) { emitter.once(event, listener); },
+    off(event, listener) { emitter.off(event, listener); },
   };
 }
