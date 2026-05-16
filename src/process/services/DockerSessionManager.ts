@@ -108,6 +108,7 @@ function buildSessionHostConfig(volumeName: string): Docker.HostConfig {
     Memory: memBytes,
     CpuShares: cpuShares,
     PidsLimit: pidsLimit,
+    NetworkMode: 'aionui-cowork_default',
   };
 }
 
@@ -243,12 +244,28 @@ export const DockerSessionManager = {
   async acquire(input: AcquireInput, dockerOptions?: DockerOptions): Promise<AcquireResult> {
     const { conversationId, userId, projectId } = input;
     const db = await getDatabase();
+    console.log('[DockerSessionManager] acquire:', conversationId, userId, projectId);
     const existing = db.getDockerSessionForUser(conversationId, userId);
     if (existing.success && existing.data && existing.data.status === 'running' && existing.data.container_id) {
-      // Touch the heartbeat so eviction stays accurate, but don't bounce the
-      // container — the caller just wants to send work to it.
-      db.upsertDockerSession({ ...existing.data, last_seen_at: Date.now() });
-      return { session: existing.data, created: false };
+      // Verify the container actually exists in Docker before reusing
+      const docker = getDocker(dockerOptions);
+      const container = docker.getContainer(existing.data.container_id);
+      try {
+        const info = await container.inspect();
+        if (info.State.Running) {
+          console.log('[DockerSessionManager] reusing existing container:', existing.data.container_id);
+          db.upsertDockerSession({ ...existing.data, last_seen_at: Date.now() });
+          return { session: existing.data, created: false };
+        }
+        console.log('[DockerSessionManager] container exists but not running, state:', info.State.Status);
+      } catch {
+        console.log('[DockerSessionManager] container no longer exists in Docker, cleaning up DB');
+      }
+      // Container gone or not running — clean up stale DB row and fall through to create
+      db.upsertDockerSession({ ...existing.data, status: 'stopped', container_id: null });
+    }
+    if (existing.success && existing.data) {
+      console.log('[DockerSessionManager] existing session status:', existing.data.status, 'container:', existing.data.container_id);
     }
 
     // Look up the project up-front so a missing/unauthorised project never
@@ -306,7 +323,7 @@ export const DockerSessionManager = {
       ? `${dataDir}/aionui/uploads/${project.project.storage_key}`
       : `/in/${project.project.storage_key}`;
     await runHelperToCompletion(docker, {
-      Cmd: ['sh', '-c', `unzip -q -o "${zipSource}" -d /workspace`],
+      Cmd: ['sh', '-c', `unzip -q -o "${zipSource}" -d /workspace && chown -R 10001:10001 /workspace`],
       HostConfig: {
         AutoRemove: true,
         Binds: binds,
@@ -347,7 +364,9 @@ export const DockerSessionManager = {
       WorkingDir: '/workspace',
       HostConfig: buildSessionHostConfig(volumeName),
     });
+    console.log('[DockerSessionManager] creating container:', container.id, 'conversation:', conversationId);
     await container.start();
+    console.log('[DockerSessionManager] container started:', container.id, 'conversation:', conversationId);
 
     const completed: IDockerSession = {
       ...startingRow,
@@ -356,6 +375,7 @@ export const DockerSessionManager = {
       last_seen_at: Date.now(),
     };
     db.upsertDockerSession(completed);
+    console.log('[DockerSessionManager] session saved:', completed.container_id);
     return { session: completed, created: true };
   },
 

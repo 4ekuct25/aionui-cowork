@@ -43,8 +43,9 @@ export type DockerSpawnOptions = {
 const RELAY_SCRIPT = `
 var net=require('net'),cp=require('child_process'),fs=require('fs');
 var all=process.argv.slice(2);
-var portFile=all[all.length-1],cwd=all[all.length-2],envObj=JSON.parse(all[all.length-3]||'{}');
+var portFile=all[all.length-1],cwd=all[all.length-2],envFile=all[all.length-3];
 var cmd=all[0],args=all.slice(1,all.length-3);
+var envObj=envFile&&envFile.startsWith('/')?JSON.parse(fs.readFileSync(envFile,'utf8')||'{}'):JSON.parse(envFile||'{}');
 var child=cp.spawn(cmd,args,{stdio:['pipe','pipe','pipe'],cwd:cwd,env:Object.assign({},process.env,envObj),shell:false});
 var srv=net.createServer(function(s){
   s.on('data',function(d){child.stdin.write(d)});
@@ -166,26 +167,32 @@ export function dockerSpawn(command: string, args: string[], options: DockerSpaw
   const relayB64 = Buffer.from(RELAY_SCRIPT).toString('base64');
   const envWithHome = Object.assign({}, options.env, { HOME: '/tmp' });
   const envJson = JSON.stringify(envWithHome);
-
-  const shellArgs = [shellQuote(command), ...args.map(shellQuote), shellQuote(envJson), shellQuote(cwd), shellQuote(portFile)].join(' ');
+  const envJsonB64 = Buffer.from(envJson).toString('base64');
 
   void (async () => {
     try {
       // Step 1: Write relay script and start it via detached exec
       const container: Container = docker.getContainer(options.containerId);
+      // Write script + decode env from base64 to avoid shell quoting issues entirely
+      const writeScript = `echo "${relayB64}" | base64 -d > /tmp/aionrs-relay.js`;
+      const envDecode = `echo "${envJsonB64}" | base64 -d > /tmp/aionrs-env.json`;
+      console.error('[dockerSpawn] Executing in container', options.containerId.substring(0, 12), 'cmd:', command, 'args:', args.join(' '));
       const startExec = await container.exec({
-        Cmd: ['/bin/sh', '-c', `echo '${relayB64}' | base64 -d > /tmp/aionrs-relay.js && node /tmp/aionrs-relay.js ${shellArgs} &`],
+        Cmd: ['/bin/sh', '-c', `${writeScript} && ${envDecode} && node /tmp/aionrs-relay.js ${command} ${args.join(' ')} /tmp/aionrs-env.json ${cwd} ${portFile} &`],
         AttachStdout: true,
         AttachStderr: true,
         Tty: false,
       });
-      const startStream = await startExec.start({ hijack: false });
-      const startData = await drainExec(startStream as unknown as Readable);
-      if (startData.length > 0) {
-        const s = startData.toString();
-        if (s.includes('Error') || s.includes('error')) {
-          console.error('[dockerSpawn] Relay start error:', s.substring(0, 300));
+      try {
+        const startStream = await startExec.start({ hijack: false });
+        const startData = await drainExec(startStream as unknown as Readable);
+        if (startData.length > 0) {
+          const s = startData.toString();
+          console.error('[dockerSpawn] Exec output:', s.substring(0, 300));
         }
+      } catch (execErr: any) {
+        console.error('[dockerSpawn] Exec start error:', execErr.message, execErr.statusCode, JSON.stringify(execErr.json ?? {}).substring(0, 300));
+        throw execErr;
       }
 
       // Step 2: Get container IP for TCP connection

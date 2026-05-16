@@ -59,6 +59,7 @@ export function initWebAdapter(wss: WebSocketServer): void {
   wsManager.setupConnectionHandler(
     (name, data, _ws) => {
       const emitter = getBridgeEmitter();
+      console.log('[adapter] WS message received:', name, JSON.stringify(data).substring(0, 120));
       if (emitter) {
         emitter.emit(name, data);
       } else {

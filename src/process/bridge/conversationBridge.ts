@@ -286,6 +286,22 @@ export function initConversationBridge(
         }
       }
 
+      // Release Docker session container so it doesn't accumulate
+      try {
+        const { DockerSessionManager } = await import('@process/services/DockerSessionManager');
+        const { getDatabase } = await import('@process/services/database/export');
+        const db = await getDatabase();
+        const driver = db.getDriver();
+        const sess = driver
+          .prepare('SELECT user_id FROM conversations WHERE id = ?')
+          .get(id) as { user_id: string } | undefined;
+        if (sess) {
+          await DockerSessionManager.release(id, sess.user_id);
+        }
+      } catch (e) {
+        console.warn('[conversationBridge] Failed to release Docker session:', (e as Error).message);
+      }
+
       await conversationService.deleteConversation(id);
       removeFromMessageCache(id);
       if (conversation) {

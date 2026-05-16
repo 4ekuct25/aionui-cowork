@@ -39,6 +39,9 @@ services:
       # helper. Pointing at the proxy keeps the control-plane off the raw
       # socket — see the `docker-proxy` service below.
       DOCKER_HOST: tcp://docker-proxy:2375
+      # Phase 9.1b: sweep orphaned containers/volumes every 15 minutes.
+      # Without this, containers accumulate until the next server restart.
+      SESSION_GC_CRON: '0 */15 * * * *'
     depends_on:
       docker-proxy:
         condition: service_started
