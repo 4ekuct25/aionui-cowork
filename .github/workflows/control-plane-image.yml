@@ -4,13 +4,13 @@ on:
   push:
     branches: [dockerize]
     paths:
-      - "Dockerfile"
-      - "src/**"
-      - "scripts/build-server.mjs"
-      - "package.json"
-      - "bun.lock"
-      - "patches/**"
-      - ".github/workflows/control-plane-image.yml"
+      - 'Dockerfile'
+      - 'src/**'
+      - 'scripts/build-server.mjs'
+      - 'package.json'
+      - 'bun.lock'
+      - 'patches/**'
+      - '.github/workflows/control-plane-image.yml'
   workflow_dispatch:
 
 jobs:

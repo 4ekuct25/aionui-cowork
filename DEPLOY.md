@@ -100,14 +100,14 @@ docker ps --filter "label=aionui.managed=true"
 
 ## 8. Common operations
 
-| Task | Command |
-|---|---|
-| Tail control-plane logs | `docker compose logs -f app` |
-| Re-pull latest images | `docker compose pull && docker compose up -d` |
-| Stop everything | `docker compose down` |
-| Drop user data (CAREFUL) | `docker compose down -v` |
-| List active sandbox containers | `docker ps --filter "label=aionui.managed=true"` |
-| Inspect audit log | `docker compose exec app sqlite3 /data/aionui.db 'SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 50'` |
+| Task                           | Command                                                                                                       |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| Tail control-plane logs        | `docker compose logs -f app`                                                                                  |
+| Re-pull latest images          | `docker compose pull && docker compose up -d`                                                                 |
+| Stop everything                | `docker compose down`                                                                                         |
+| Drop user data (CAREFUL)       | `docker compose down -v`                                                                                      |
+| List active sandbox containers | `docker ps --filter "label=aionui.managed=true"`                                                              |
+| Inspect audit log              | `docker compose exec app sqlite3 /data/aionui.db 'SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 50'` |
 
 ## 9. TLS / reverse proxy
 
