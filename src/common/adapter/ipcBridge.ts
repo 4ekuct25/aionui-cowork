@@ -219,15 +219,21 @@ export const dialog = {
   >('show-open'), // 打开文件/文件夹选择窗口
 };
 export const fs = {
-  getFilesByDir: bridge.buildProvider<Array<IDirOrFile>, { dir: string; root: string; conversationId?: string }>('get-file-by-dir'), // 获取指定文件夹下所有文件夹和文件列表
-  listWorkspaceFiles: bridge.buildProvider<Array<IWorkspaceFlatFile>, { root: string; conversationId?: string }>('list-workspace-files'),
+  getFilesByDir: bridge.buildProvider<Array<IDirOrFile>, { dir: string; root: string; conversationId?: string }>(
+    'get-file-by-dir'
+  ), // 获取指定文件夹下所有文件夹和文件列表
+  listWorkspaceFiles: bridge.buildProvider<Array<IWorkspaceFlatFile>, { root: string; conversationId?: string }>(
+    'list-workspace-files'
+  ),
   getImageBase64: bridge.buildProvider<string, { path: string; conversationId?: string }>('get-image-base64'), // 获取图片base64
   fetchRemoteImage: bridge.buildProvider<string, { url: string }>('fetch-remote-image'), // 远程图片转base64
   readFile: bridge.buildProvider<string, { path: string; conversationId?: string }>('read-file'), // 读取文件内容（UTF-8）
   readFileBuffer: bridge.buildProvider<ArrayBuffer, { path: string; conversationId?: string }>('read-file-buffer'), // 读取二进制文件为 ArrayBuffer
   createTempFile: bridge.buildProvider<string, { fileName: string }>('create-temp-file'), // 创建临时文件
   createUploadFile: bridge.buildProvider<string, { fileName: string; conversationId?: string }>('create-upload-file'), // 创建上传文件（根据设置决定保存位置）
-  writeFile: bridge.buildProvider<boolean, { path: string; data: Uint8Array | string; conversationId?: string }>('write-file'), // 写入文件
+  writeFile: bridge.buildProvider<boolean, { path: string; data: Uint8Array | string; conversationId?: string }>(
+    'write-file'
+  ), // 写入文件
   createZip: bridge.buildProvider<
     boolean,
     {
@@ -252,9 +258,10 @@ export const fs = {
     { filePaths: string[]; workspace: string; sourceRoot?: string; conversationId?: string }
   >('copy-files-to-workspace'), // 复制文件到工作空间 (Copy files into workspace)
   removeEntry: bridge.buildProvider<IBridgeResponse, { path: string; conversationId?: string }>('remove-entry'), // 删除文件或文件夹
-  renameEntry: bridge.buildProvider<IBridgeResponse<{ newPath: string }>, { path: string; newName: string; conversationId?: string }>(
-    'rename-entry'
-  ), // 重命名文件或文件夹
+  renameEntry: bridge.buildProvider<
+    IBridgeResponse<{ newPath: string }>,
+    { path: string; newName: string; conversationId?: string }
+  >('rename-entry'), // 重命名文件或文件夹
   readBuiltinRule: bridge.buildProvider<string, { fileName: string }>('read-builtin-rule'), // 读取内置 rules 文件
   readBuiltinSkill: bridge.buildProvider<string, { fileName: string }>('read-builtin-skill'), // 读取内置 skills 文件
   // 助手规则文件操作 / Assistant rule file operations

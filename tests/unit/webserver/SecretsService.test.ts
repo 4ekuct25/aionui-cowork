@@ -28,7 +28,7 @@ const { mockUpsert, mockGet, mockList, mockDelete, store } = vi.hoisted(() => {
       const rows = [...memory.values()]
         .filter((r) => r.user_id === userId)
         .map((r) => ({ key_name: r.key_name, created_at: r.created_at, updated_at: r.updated_at }))
-        .sort((a, b) => a.key_name.localeCompare(b.key_name));
+        .toSorted((a, b) => a.key_name.localeCompare(b.key_name));
       return { success: true, data: rows };
     }),
     mockDelete: vi.fn((userId: string, keyName: string) => {

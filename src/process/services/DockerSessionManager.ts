@@ -210,10 +210,7 @@ function resolveDockerBinds(uploadsHostPath: string, workspaceVolumeName: string
 
   // Mount the data volume at /data and the workspace volume at /workspace.
   // The unzip command reads from /in which is a sub-path of the data volume.
-  return [
-    `${dataVolumeName}:${dataDir}:ro`,
-    `${workspaceVolumeName}:/workspace`,
-  ];
+  return [`${dataVolumeName}:${dataDir}:ro`, `${workspaceVolumeName}:/workspace`];
 }
 
 function volumeNameFor(userId: string, conversationId: string): string {
@@ -265,7 +262,12 @@ export const DockerSessionManager = {
       db.upsertDockerSession({ ...existing.data, status: 'stopped', container_id: null });
     }
     if (existing.success && existing.data) {
-      console.log('[DockerSessionManager] existing session status:', existing.data.status, 'container:', existing.data.container_id);
+      console.log(
+        '[DockerSessionManager] existing session status:',
+        existing.data.status,
+        'container:',
+        existing.data.container_id
+      );
     }
 
     // Look up the project up-front so a missing/unauthorised project never
@@ -319,9 +321,10 @@ export const DockerSessionManager = {
     const uploadsHostPath = path.join(getDataPath(), 'uploads');
     const binds = resolveDockerBinds(uploadsHostPath, volumeName);
     const dataDir = process.env.DATA_DIR ?? '/data';
-    const zipSource = process.env.AIONUI_PLATFORM === 'docker'
-      ? `${dataDir}/aionui/uploads/${project.project.storage_key}`
-      : `/in/${project.project.storage_key}`;
+    const zipSource =
+      process.env.AIONUI_PLATFORM === 'docker'
+        ? `${dataDir}/aionui/uploads/${project.project.storage_key}`
+        : `/in/${project.project.storage_key}`;
     await runHelperToCompletion(docker, {
       Cmd: ['sh', '-c', `unzip -q -o "${zipSource}" -d /workspace && chown -R 10001:10001 /workspace`],
       HostConfig: {

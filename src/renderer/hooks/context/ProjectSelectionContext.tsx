@@ -117,7 +117,7 @@ export function useProjectSelection(): ProjectSelectionContextValue {
  */
 export async function attachConversationToProject(
   conversationId: string,
-  projectId: string,
+  projectId: string
 ): Promise<{ ok: boolean; status?: number; message?: string }> {
   try {
     const body = withCsrfToken({ conversationId, projectId });
