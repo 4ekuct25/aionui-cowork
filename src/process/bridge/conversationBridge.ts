@@ -272,6 +272,12 @@ export function initConversationBridge(
   ipcBridge.conversation.createWithConversation.provider(
     async ({ conversation, sourceConversationId, migrateCron }) => {
       try {
+        // Migrating from a source conversation must respect ownership — a
+        // user shouldn't be able to fork or clone another tenant's chat
+        // by passing its id here.
+        if (sourceConversationId && !(await assertConversationOwner(sourceConversationId))) {
+          return Promise.resolve(conversation);
+        }
         const result = await conversationService.createWithMigration({
           conversation,
           sourceConversationId,
@@ -716,12 +722,18 @@ export function initConversationBridge(
   // 通用 confirmMessage 实现 - 自动根据 conversation 类型分发
 
   ipcBridge.conversation.confirmation.confirm.provider(async ({ conversation_id, msg_id, data, callId }) => {
+    if (!(await assertConversationOwner(conversation_id))) {
+      return { success: false, msg: 'conversation not found' };
+    }
     const task = workerTaskManager.getTask(conversation_id);
     if (!task) return { success: false, msg: 'conversation not found' };
     task.confirm(msg_id, callId, data);
     return { success: true };
   });
   ipcBridge.conversation.confirmation.list.provider(async ({ conversation_id }) => {
+    if (!(await assertConversationOwner(conversation_id))) {
+      return [];
+    }
     const task = workerTaskManager.getTask(conversation_id);
     if (!task) return [];
     return task.getConfirmations();
@@ -732,6 +744,9 @@ export function initConversationBridge(
   // Keys are parsed from raw action+commandType here (single source of truth)
   // Keys 在此处从原始 action+commandType 解析（单一数据源）
   ipcBridge.conversation.approval.check.provider(async ({ conversation_id, action, commandType }) => {
+    if (!(await assertConversationOwner(conversation_id))) {
+      return false;
+    }
     const task = workerTaskManager.getTask(conversation_id) as unknown as
       | GeminiAgentManager
       | AionrsManager
