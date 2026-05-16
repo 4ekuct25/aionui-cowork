@@ -8,11 +8,18 @@ import type { WebSocketServer } from 'ws';
 import { WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import { TokenMiddleware } from '@process/webserver/auth/middleware/TokenMiddleware';
+import { AuthService } from '@process/webserver/auth/service/AuthService';
 import { WEBSOCKET_CONFIG } from '../config/constants';
 import { SHOW_OPEN_REQUEST_EVENT } from '@/common/adapter/constant';
 
 interface ClientInfo {
   token: string;
+  /**
+   * Authenticated userId for this connection. Captured at handshake from
+   * the JWT payload and used by bridge providers to enforce per-conversation
+   * ownership checks.
+   */
+  userId: string;
   lastPing: number;
 }
 
@@ -40,8 +47,8 @@ export class WebSocketManager {
    * Setup connection handler
    */
   setupConnectionHandler(
-    onMessage: (name: string, data: any, ws: WebSocket) => void,
-    onShell?: (ws: WebSocket, conversationId: string, req: IncomingMessage) => Promise<void>,
+    onMessage: (name: string, data: any, ws: WebSocket, userId: string) => void,
+    onShell?: (ws: WebSocket, conversationId: string, req: IncomingMessage) => Promise<void>
   ): void {
     this.wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
       const url = new URL(req.url || '/', `http://${req.headers.host}`);
@@ -56,7 +63,11 @@ export class WebSocketManager {
         console.log('[WebSocketManager] Shell token present:', !!token);
 
         if (!token || !(await TokenMiddleware.validateWebSocketToken(token))) {
-          console.log('[WebSocketManager] Shell auth failed, token=', token ? token.substring(0, 20) + '...' : 'null', 'closing');
+          console.log(
+            '[WebSocketManager] Shell auth failed, token=',
+            token ? token.substring(0, 20) + '...' : 'null',
+            'closing'
+          );
           ws.close(WEBSOCKET_CONFIG.CLOSE_CODES.POLICY_VIOLATION, 'Authentication required');
           return;
         }
@@ -81,13 +92,14 @@ export class WebSocketManager {
 
       const token = TokenMiddleware.extractWebSocketToken(req);
 
-      if (!(await this.validateConnection(ws, token))) {
+      const payload = await this.validateAndDecode(ws, token);
+      if (!payload) {
         ws.off('message', bufferMessage);
         return;
       }
 
       ws.off('message', bufferMessage);
-      this.addClient(ws, token!);
+      this.addClient(ws, token!, payload.userId);
       this.setupMessageHandler(ws, onMessage);
       this.setupCloseHandler(ws);
       this.setupErrorHandler(ws);
@@ -102,16 +114,18 @@ export class WebSocketManager {
   }
 
   /**
-   * 验证连接
-   * Validate connection
+   * Validate connection and return the decoded JWT payload (with userId) so
+   * we can stash it on the client for ownership enforcement. Returns null on
+   * failure — callers must short-circuit.
    */
-  private async validateConnection(ws: WebSocket, token: string | null): Promise<boolean> {
+  private async validateAndDecode(ws: WebSocket, token: string | null): Promise<{ userId: string } | null> {
     if (!token) {
       ws.close(WEBSOCKET_CONFIG.CLOSE_CODES.POLICY_VIOLATION, 'No token provided');
-      return false;
+      return null;
     }
 
-    if (!(await TokenMiddleware.validateWebSocketToken(token))) {
+    const payload = await AuthService.verifyWebSocketToken(token);
+    if (!payload) {
       // Send auth-expired before closing so the client can redirect to login
       // instead of entering an infinite reconnection loop.
       // This mirrors the behavior in checkClients() heartbeat check.
@@ -126,19 +140,20 @@ export class WebSocketManager {
         // Socket may not be ready for sending yet; close will still fire on client
       }
       ws.close(WEBSOCKET_CONFIG.CLOSE_CODES.POLICY_VIOLATION, 'Invalid or expired token');
-      return false;
+      return null;
     }
 
-    return true;
+    return { userId: payload.userId };
   }
 
   /**
    * 添加客户端
    * Add client
    */
-  private addClient(ws: WebSocket, token: string): void {
+  private addClient(ws: WebSocket, token: string, userId: string): void {
     this.clients.set(ws, {
       token,
+      userId,
       lastPing: Date.now(),
     });
   }
@@ -147,7 +162,10 @@ export class WebSocketManager {
    * 设置消息处理器
    * Setup message handler
    */
-  private setupMessageHandler(ws: WebSocket, onMessage: (name: string, data: any, ws: WebSocket) => void): void {
+  private setupMessageHandler(
+    ws: WebSocket,
+    onMessage: (name: string, data: any, ws: WebSocket, userId: string) => void
+  ): void {
     ws.on('message', (rawData) => {
       try {
         const parsed = JSON.parse(rawData.toString());
@@ -165,8 +183,15 @@ export class WebSocketManager {
           return;
         }
 
-        // Forward other messages to bridge system
-        onMessage(name, data, ws);
+        // Forward other messages to bridge system, tagged with the caller's
+        // userId so bridge providers can enforce per-conversation ownership.
+        const clientInfo = this.clients.get(ws);
+        if (!clientInfo) {
+          // Client was removed mid-flight (e.g. heartbeat timeout race) —
+          // drop the message rather than emit unauthenticated.
+          return;
+        }
+        onMessage(name, data, ws, clientInfo.userId);
       } catch {
         try {
           ws.send(

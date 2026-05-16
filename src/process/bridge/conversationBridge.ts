@@ -32,6 +32,29 @@ import fs from 'fs';
 import path from 'path';
 import { migrateConversationToDatabase } from './migrationUtils';
 import { ConversationSideQuestionService } from './services/ConversationSideQuestionService';
+import { getCallerUserId } from '@process/webserver/callerContext';
+import { ownConversation } from '@process/webserver/auth/conversationOwnership';
+
+/**
+ * Gate a bridge provider on conversation ownership when the call originated
+ * from an authenticated WebSocket client. Returns `true` when the caller is
+ * allowed to act on the conversation — either because they own it, or
+ * because there is no caller context (Electron single-user IPC, which is
+ * not multi-tenant). Returns `false` to signal the provider should refuse.
+ *
+ * Collapsing "not found" and "owned by someone else" into the same false
+ * result is deliberate: leaking conversation existence would let an attacker
+ * enumerate other users' chat IDs.
+ */
+async function assertConversationOwner(conversationId: string): Promise<boolean> {
+  const callerUserId = getCallerUserId();
+  if (!callerUserId) {
+    // No WS caller context — Electron IPC path. Single-user; no ACL needed.
+    return true;
+  }
+  const owned = await ownConversation(conversationId, callerUserId);
+  return owned !== null;
+}
 
 const refreshTrayMenuSafely = async (): Promise<void> => {
   try {
@@ -71,6 +94,9 @@ export function initConversationBridge(
 
   ipcBridge.openclawConversation.getRuntime.provider(async ({ conversation_id }) => {
     try {
+      if (!(await assertConversationOwner(conversation_id))) {
+        return { success: false, msg: 'OpenClaw conversation not found' };
+      }
       const conversation = await conversationService.getConversation(conversation_id);
       if (!conversation || conversation.type !== 'openclaw-gateway') {
         return { success: false, msg: 'OpenClaw conversation not found' };
@@ -175,6 +201,9 @@ export function initConversationBridge(
   // Manually reload conversation context (Gemini): inject recent history into memory
   ipcBridge.conversation.reloadContext.provider(async ({ conversation_id }) => {
     try {
+      if (!(await assertConversationOwner(conversation_id))) {
+        return { success: false, msg: 'conversation not found' };
+      }
       const task = (await workerTaskManager.getOrBuildTask(conversation_id)) as unknown as
         | GeminiAgentManager
         | AcpAgentManager
@@ -194,6 +223,9 @@ export function initConversationBridge(
 
   ipcBridge.conversation.getAssociateConversation.provider(async ({ conversation_id }) => {
     try {
+      if (!(await assertConversationOwner(conversation_id))) {
+        return [];
+      }
       // Try to get current conversation via service
       let currentConversation: TChatConversation | undefined =
         await conversationService.getConversation(conversation_id);
@@ -263,6 +295,13 @@ export function initConversationBridge(
 
   ipcBridge.conversation.remove.provider(async ({ id }) => {
     try {
+      // Enforce ownership before touching containers or DB rows. Without
+      // this guard, any authenticated WS user could delete another user's
+      // conversation by sending its id (the bug fixed in 2026-05-17 audit).
+      if (!(await assertConversationOwner(id))) {
+        return false;
+      }
+
       // Get conversation source before deletion (for channel cleanup)
       const conversation = await conversationService.getConversation(id);
       const source = conversation?.source;
@@ -292,9 +331,9 @@ export function initConversationBridge(
         const { getDatabase } = await import('@process/services/database/export');
         const db = await getDatabase();
         const driver = db.getDriver();
-        const sess = driver
-          .prepare('SELECT user_id FROM conversations WHERE id = ?')
-          .get(id) as { user_id: string } | undefined;
+        const sess = driver.prepare('SELECT user_id FROM conversations WHERE id = ?').get(id) as
+          | { user_id: string }
+          | undefined;
         if (sess) {
           await DockerSessionManager.release(id, sess.user_id);
         }
@@ -318,6 +357,9 @@ export function initConversationBridge(
   ipcBridge.conversation.update.provider(
     async ({ id, updates, mergeExtra }: { id: string; updates: Partial<TChatConversation>; mergeExtra?: boolean }) => {
       try {
+        if (!(await assertConversationOwner(id))) {
+          return false;
+        }
         const existing = await conversationService.getConversation(id);
         // Only gemini type has model, use 'in' check to safely access
         const prevModel = existing && 'model' in existing ? existing.model : undefined;
@@ -359,6 +401,9 @@ export function initConversationBridge(
   // flag) to avoid triggering the sidebar loading spinner prematurely.
   ipcBridge.conversation.warmup.provider(async ({ conversation_id }) => {
     try {
+      if (!(await assertConversationOwner(conversation_id))) {
+        return;
+      }
       if (teamSessionService) {
         const conversation = await conversationService.getConversation(conversation_id);
         const teamId = (conversation?.extra as { teamId?: string } | undefined)?.teamId;
@@ -377,8 +422,17 @@ export function initConversationBridge(
 
   ipcBridge.conversation.reset.provider(async ({ id }) => {
     if (id) {
+      if (!(await assertConversationOwner(id))) {
+        return;
+      }
       workerTaskManager.kill(id);
     } else {
+      // Bulk clear is only meaningful in single-user (Electron) mode. Refuse
+      // when a WS caller is set so one user can't blow away every running
+      // task on the host.
+      if (getCallerUserId()) {
+        return;
+      }
       // fire-and-forget: don't block the IPC response on the 3s graceful shutdown
       void workerTaskManager.clear();
     }
@@ -386,6 +440,9 @@ export function initConversationBridge(
 
   ipcBridge.conversation.get.provider(async ({ id }) => {
     try {
+      if (!(await assertConversationOwner(id))) {
+        return undefined;
+      }
       // Try to get conversation from service (database)
       const conversation = await conversationService.getConversation(id);
       if (conversation) {
@@ -449,6 +506,9 @@ export function initConversationBridge(
   });
 
   ipcBridge.conversation.stop.provider(async ({ conversation_id }) => {
+    if (!(await assertConversationOwner(conversation_id))) {
+      return { success: true, msg: 'conversation not found' };
+    }
     const task = workerTaskManager.getTask(conversation_id);
     if (!task) return { success: true, msg: 'conversation not found' };
     await task.stop();
@@ -463,6 +523,9 @@ export function initConversationBridge(
 
   ipcBridge.conversation.getSlashCommands.provider(async ({ conversation_id }) => {
     try {
+      if (!(await assertConversationOwner(conversation_id))) {
+        return { success: true, data: { commands: [] } };
+      }
       const conversation = await conversationService.getConversation(conversation_id);
       if (!conversation) {
         return { success: true, data: { commands: [] } };
@@ -490,6 +553,9 @@ export function initConversationBridge(
 
   ipcBridge.conversation.askSideQuestion.provider(async ({ conversation_id, question }) => {
     try {
+      if (!(await assertConversationOwner(conversation_id))) {
+        return { success: false, msg: 'conversation not found' };
+      }
       const result = await sideQuestionService.ask(conversation_id, question);
       return {
         success: true,
@@ -522,6 +588,9 @@ export function initConversationBridge(
       return { success: false, msg: 'Missing request parameters' };
     }
     const { conversation_id, files, ...other } = params;
+    if (!(await assertConversationOwner(conversation_id))) {
+      return { success: false, msg: 'conversation not found' };
+    }
     let task: IAgentManager | undefined;
     try {
       task = await workerTaskManager.getOrBuildTask(conversation_id);

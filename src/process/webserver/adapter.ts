@@ -9,6 +9,7 @@ import type { IncomingMessage } from 'http';
 import { registerWebSocketBroadcaster, getBridgeEmitter } from '@/common/adapter/registry';
 import { WebSocketManager } from './websocket/WebSocketManager';
 import { getDatabase } from '@process/services/database/export';
+import { runWithCaller } from './callerContext';
 
 // 存储取消注册函数，用于服务器停止时清理
 // Store unregister function for cleanup when server stops
@@ -24,9 +25,7 @@ async function resolveContainerId(conversationId: string): Promise<string | null
     const db = await getDatabase();
     const session = db
       .getDriver()
-      .prepare(
-        `SELECT container_id FROM docker_sessions WHERE conversation_id = ? AND status = 'running'`
-      )
+      .prepare(`SELECT container_id FROM docker_sessions WHERE conversation_id = ? AND status = 'running'`)
       .get(conversationId) as { container_id: string } | undefined;
     return session?.container_id ?? null;
   } catch {
@@ -57,11 +56,16 @@ export function initWebAdapter(wss: WebSocketServer): void {
   // 设置 WebSocket 消息处理器，将消息转发到 bridge emitter
   // Setup WebSocket message handler to forward messages to bridge emitter
   wsManager.setupConnectionHandler(
-    (name, data, _ws) => {
+    (name, data, _ws, userId) => {
       const emitter = getBridgeEmitter();
       console.log('[adapter] WS message received:', name, JSON.stringify(data).substring(0, 120));
       if (emitter) {
-        emitter.emit(name, data);
+        // Tag the in-flight bridge dispatch with the authenticated caller so
+        // providers (e.g. conversation.remove) can enforce ownership without
+        // trusting client-supplied identifiers.
+        runWithCaller({ userId }, () => {
+          emitter.emit(name, data);
+        });
       } else {
         console.warn('[adapter] Bridge emitter not set, message dropped:', name);
       }
