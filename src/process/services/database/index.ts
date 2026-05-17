@@ -28,6 +28,7 @@ import type {
 } from './types';
 import { conversationToRow, messageToRow, rowToConversation, rowToMessage } from './types';
 import type { IMessageSearchItem, IMessageSearchResponse } from '@/common/types/database';
+import { getCallerUserId } from '@process/webserver/callerContext';
 import type {
   IChannelPluginConfig,
   IChannelUser,
@@ -961,7 +962,11 @@ export class AionUIDatabase {
 
   createConversation(conversation: TChatConversation, userId?: string): IQueryResult<TChatConversation> {
     try {
-      const row = conversationToRow(conversation, userId || this.defaultUserId);
+      // Resolve owner with the standard precedence: explicit param > WS caller
+      // context > legacy default. Bridge providers run inside runWithCaller()
+      // so AsyncLocalStorage holds the authenticated user_id even when
+      // intermediate service layers don't plumb it through.
+      const row = conversationToRow(conversation, userId || getCallerUserId() || this.defaultUserId);
 
       const stmt = this.db.prepare(`
         INSERT INTO conversations (id, user_id, name, type, extra, model, status, source, channel_chat_id, created_at, updated_at)
@@ -1101,7 +1106,7 @@ export class AionUIDatabase {
 
   getUserConversations(userId?: string, page = 0, pageSize = 50): IPaginatedResult<TChatConversation> {
     try {
-      const finalUserId = userId || this.defaultUserId;
+      const finalUserId = userId || getCallerUserId() || this.defaultUserId;
 
       const countResult = this.db
         .prepare('SELECT COUNT(*) as count FROM conversations WHERE user_id = ?')
@@ -1313,7 +1318,7 @@ export class AionUIDatabase {
     }
 
     try {
-      const finalUserId = userId || this.defaultUserId;
+      const finalUserId = userId || getCallerUserId() || this.defaultUserId;
       const escapedKeyword = escapeLikePattern(trimmedKeyword);
       const likePattern = `%${escapedKeyword}%`;
 
