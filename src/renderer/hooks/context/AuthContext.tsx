@@ -273,6 +273,19 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         (window as any).__websocketReconnect();
       }
 
+      // Force a full reload so per-user React state (Recents sidebar,
+      // project picker, workspace prefs, in-memory caches) re-initialises
+      // against the new authenticated identity. Without this, the prior
+      // user's cached state bleeds into the new session — e.g. signing in
+      // as admin after qa_check_2026 still showed qa's chats and qa-demo
+      // in the picker until the user hard-reloaded by hand. Deferring with
+      // a microtask lets the caller's `.then(...)` handler fire first.
+      if (typeof window !== 'undefined') {
+        queueMicrotask(() => {
+          window.location.assign('/');
+        });
+      }
+
       return { success: true };
     } catch (error) {
       console.error('Login request failed:', error);
@@ -375,6 +388,14 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       setStatus('unauthenticated');
       // Clear cache on logout for security
       clearAuthCache();
+      // Same reasoning as the login path — nuke per-user React state so
+      // the next sign-in starts from a clean slate. Defer to a microtask
+      // so any caller awaiting `logout()` resolves before navigation.
+      if (typeof window !== 'undefined') {
+        queueMicrotask(() => {
+          window.location.assign('/');
+        });
+      }
     }
   }, []);
 
