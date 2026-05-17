@@ -404,11 +404,29 @@ export class AionrsAgent {
   async send(content: string, msgId: string, files?: string[]): Promise<void> {
     await this.readyPromise;
     this.exitExpected = false;
+
+    // In docker mode the aionrs process runs inside a session container whose
+    // only writable mount is /workspace. Uploaded files arrive on the host at
+    // /data/config/temp/<name> via /api/upload, which is invisible from
+    // inside the sandbox — aionrs would fail with ENOENT. Inject them into
+    // /workspace/.uploads/<basename> and rewrite the paths before sending.
+    let finalFiles = files;
+    if (this.options.containerId && files?.length) {
+      try {
+        const { DockerSessionManager } = await import('@process/services/DockerSessionManager');
+        finalFiles = await DockerSessionManager.injectFilesIntoContainer(this.options.containerId, files);
+      } catch (err) {
+        console.error('[AionrsAgent] Failed to inject files into container:', (err as Error).message);
+        // Fall through with the original (host) paths — aionrs will surface
+        // a read error and the user can debug from the chat transcript.
+      }
+    }
+
     this.sendCommand({
       type: 'message',
       msg_id: msgId,
       content,
-      files,
+      files: finalFiles,
     });
   }
 

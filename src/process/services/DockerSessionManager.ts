@@ -5,8 +5,21 @@
  */
 
 import Docker, { type DockerOptions } from 'dockerode';
+import fs from 'fs';
 import path from 'path';
 import { getDataPath } from '@process/utils';
+
+// tar-stream has no @types package; the runtime API we use is small enough
+// to declare inline. `pack()` returns a Readable stream you can pipe into
+// dockerode's putArchive, and `entry({name,size,mode}, data)` appends a
+// single file entry.
+type TarPackEntry = { name: string; size: number; mode?: number };
+interface TarPack extends NodeJS.ReadableStream {
+  entry(opts: TarPackEntry, data: Buffer | string): void;
+  finalize(): void;
+}
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const tarStream = require('tar-stream') as { pack: () => TarPack };
 import { getDatabase } from '@process/services/database/export';
 import { ProjectIngestService } from '@process/services/ProjectIngestService';
 import type { IDockerSession } from '@process/services/database/types';
@@ -484,6 +497,49 @@ export const DockerSessionManager = {
    * the legacy single-tenant case (or a malformed setup) where the caller
    * should fall back to the host-spawn path.
    */
+  /**
+   * Copy a set of host files into the session container under a `.uploads/`
+   * subdirectory of /workspace. Used by agent managers so uploaded files
+   * (which land on the host's `/data/config/temp/` via /api/upload) become
+   * visible to the agent running inside the sandbox.
+   *
+   * Returns the container-side absolute paths in the same order as the input.
+   * Skips entries that don't exist or aren't regular files. Empty input → [].
+   *
+   * Implementation note: dockerode's `putArchive` accepts a tar stream and
+   * extracts it under `opts.path` inside the target container. We pack each
+   * file under `.uploads/<basename>` so they end up at
+   * `/workspace/.uploads/<basename>`. Collisions on basename overwrite the
+   * earlier entry — agents that need stable identity should be passing
+   * unique names already.
+   */
+  async injectFilesIntoContainer(
+    containerId: string,
+    hostFiles: string[],
+    dockerOptions?: DockerOptions
+  ): Promise<string[]> {
+    if (!hostFiles.length) return [];
+    const pack = tarStream.pack();
+    const containerPaths: string[] = [];
+    for (const hostPath of hostFiles) {
+      try {
+        const stat = fs.statSync(hostPath);
+        if (!stat.isFile()) continue;
+        const basename = path.basename(hostPath);
+        const data = fs.readFileSync(hostPath);
+        pack.entry({ name: `.uploads/${basename}`, size: stat.size, mode: 0o644 }, data);
+        containerPaths.push(`/workspace/.uploads/${basename}`);
+      } catch (err) {
+        console.warn('[DockerSessionManager] injectFilesIntoContainer skipped', hostPath, (err as Error).message);
+      }
+    }
+    pack.finalize();
+    if (!containerPaths.length) return [];
+    const docker = getDocker(dockerOptions);
+    await docker.getContainer(containerId).putArchive(pack, { path: '/workspace' });
+    return containerPaths;
+  },
+
   async ensureForConversation(conversationId: string): Promise<{ containerId: string; volumeName: string } | null> {
     const db = await getDatabase();
     const row = db
