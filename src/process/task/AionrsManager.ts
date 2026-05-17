@@ -81,6 +81,16 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
   readonly approvalStore = new AionrsApprovalStore();
   private agent: AionrsAgent | null = null;
   private agentReady: Promise<void>;
+  /**
+   * True while `start()` is awaiting the agent's "ready" handshake. Used by
+   * `ensureAgentReadyForSend` to await the in-flight bootstrap instead of
+   * firing a second `start()`. Without this guard, the constructor's start
+   * and the first message's ensure-ready race each other — two relay TCP
+   * servers attempt to bind to the same port, one of them wins, the other
+   * silently orphans its aionrs child, and the winner's child never sees a
+   * client → "aionrs ready timeout (30s)".
+   */
+  private bootstrapping = false;
   private currentMode: string = 'default';
   private _capabilities: AionrsCapabilities | null = null;
   private _configSentAt: number | null = null;
@@ -131,6 +141,20 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
    * otherwise pass --session-id for a new session.
    */
   override async start() {
+    if (this.bootstrapping) {
+      // Another caller already kicked off the bootstrap — share their promise.
+      await this.agentReady;
+      return;
+    }
+    this.bootstrapping = true;
+    try {
+      return await this._startInner();
+    } finally {
+      this.bootstrapping = false;
+    }
+  }
+
+  private async _startInner() {
     let sessionArgs: { resume?: string; sessionId?: string };
     try {
       const db = await getDatabase();
@@ -260,7 +284,11 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
     }
     this.stopRequested = false;
 
-    if (!this.agent || this.agent.isAlive === false) {
+    // Only fire a fresh start() when no bootstrap is in flight. The constructor
+    // already kicked off start() on construction; if a sendMessage races against
+    // it, we must await the existing promise rather than starting a second
+    // bootstrap (the second relay would race the first for the same TCP port).
+    if (!this.bootstrapping && (!this.agent || this.agent.isAlive === false)) {
       this.stopHeartbeat();
       this.agentReady = this.start().catch((err) => {
         this.agent = null;
