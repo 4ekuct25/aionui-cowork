@@ -1154,10 +1154,34 @@ export class AionUIDatabase {
     }
   }
 
-  getConversationsByCronJobId(cronJobId: string): TChatConversation[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM conversations WHERE json_extract(extra, '$.cronJobId') = ? ORDER BY created_at DESC`)
-      .all(cronJobId) as IConversationRow[];
+  /**
+   * Resolve cron-spawned child conversations.
+   *
+   * `userId` filters to a single tenant. When omitted, we still consult the
+   * WS caller context (AsyncLocalStorage) — so the WebUI bridge auto-filters
+   * by the authenticated user without each provider having to plumb the id
+   * through. Truly background callers (CronService's tick, startup orphan
+   * sweep) run outside any caller context and get the unfiltered list, which
+   * is what they need to GC across tenants.
+   */
+  getConversationsByCronJobId(cronJobId: string, userId?: string): TChatConversation[] {
+    const finalUserId = userId || getCallerUserId();
+    const rows = (finalUserId
+      ? this.db
+          .prepare(
+            `SELECT * FROM conversations
+             WHERE json_extract(extra, '$.cronJobId') = ?
+               AND user_id = ?
+             ORDER BY created_at DESC`
+          )
+          .all(cronJobId, finalUserId)
+      : this.db
+          .prepare(
+            `SELECT * FROM conversations
+             WHERE json_extract(extra, '$.cronJobId') = ?
+             ORDER BY created_at DESC`
+          )
+          .all(cronJobId)) as IConversationRow[];
     const result: TChatConversation[] = [];
     for (const row of rows) {
       try {
