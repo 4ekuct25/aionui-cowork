@@ -28,7 +28,7 @@ type ProjectSelectionContextValue = {
   available: ProjectSummary[] | null;
   /** Currently selected project id; null means "no sandbox" (legacy path). */
   selectedProjectId: string | null;
-  /** Update the selection. Persists in sessionStorage so a refresh keeps it. */
+  /** Update the selection. Persists in localStorage so it survives tab close and full reload. */
   setSelectedProjectId: (id: string | null) => void;
   /** Manual refetch — useful after the user uploads a new project on /projects. */
   refresh: () => void;
@@ -42,7 +42,7 @@ export const ProjectSelectionProvider: React.FC<React.PropsWithChildren> = ({ ch
   const [available, setAvailable] = useState<ProjectSummary[] | null>(null);
   const [selectedProjectId, setSelectedProjectIdState] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
-    return window.sessionStorage.getItem(STORAGE_KEY);
+    return window.localStorage.getItem(STORAGE_KEY);
   });
 
   const refresh = useCallback(() => {
@@ -76,9 +76,9 @@ export const ProjectSelectionProvider: React.FC<React.PropsWithChildren> = ({ ch
     setSelectedProjectIdState(id);
     if (typeof window !== 'undefined') {
       if (id) {
-        window.sessionStorage.setItem(STORAGE_KEY, id);
+        window.localStorage.setItem(STORAGE_KEY, id);
       } else {
-        window.sessionStorage.removeItem(STORAGE_KEY);
+        window.localStorage.removeItem(STORAGE_KEY);
       }
     }
   }, []);
