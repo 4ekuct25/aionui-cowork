@@ -14,6 +14,7 @@ import { getEnhancedEnv } from '@process/utils/shellEnv';
 import { resolveAionrsBinary } from './binaryResolver';
 import { buildSpawnConfig } from './envBuilder';
 import type { AionrsEvent, AionrsCommand, AionrsCapabilities } from './protocol';
+import { AIONUI_FILES_MARKER } from '@/common/config/constants';
 
 const AIONRS_PROJECT_CONFIG = '.aionrs.toml';
 
@@ -422,10 +423,27 @@ export class AionrsAgent {
       }
     }
 
+    // Renderer builds the user-bubble text with an `[[AION_FILES]]\n<paths>`
+    // trailer for the user-visible message chip. When inject ran the paths in
+    // that trailer point at host locations the sandbox can't see, so the
+    // model wastes a turn guessing /workspace/<basename> and falls back to
+    // Glob. Rewrite the trailer to the container-side paths returned by
+    // inject so the first Read tool call hits the right file directly.
+    let finalContent = content;
+    if (finalFiles && finalFiles !== files && finalFiles.length) {
+      const markerIdx = finalContent.indexOf(AIONUI_FILES_MARKER);
+      if (markerIdx !== -1) {
+        const head = finalContent.slice(0, markerIdx + AIONUI_FILES_MARKER.length);
+        finalContent = `${head}\n${finalFiles.join('\n')}`;
+      } else {
+        finalContent = `${finalContent}\n\n${AIONUI_FILES_MARKER}\n${finalFiles.join('\n')}`;
+      }
+    }
+
     this.sendCommand({
       type: 'message',
       msg_id: msgId,
-      content,
+      content: finalContent,
       files: finalFiles,
     });
   }
