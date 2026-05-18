@@ -37,6 +37,7 @@ vi.mock('@/common', () => ({
       confirmMessage: mockProvider('conversation.confirmMessage'),
       listChanged: { emit: vi.fn() },
       listByCronJob: mockProvider('conversation.listByCronJob'),
+      streamResync: mockProvider('conversation.streamResync'),
       responseStream: { emit: vi.fn() },
       confirmation: {
         confirm: mockProvider('conversation.confirmation.confirm'),

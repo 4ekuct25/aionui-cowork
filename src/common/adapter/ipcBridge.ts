@@ -63,6 +63,19 @@ export const conversation = {
   >('conversation.ask-side-question'),
   confirmMessage: bridge.buildProvider<IBridgeResponse, IConfirmMessageParams>('conversation.confirm.message'), // 通用确认消息
   responseStream: bridge.buildEmitter<IResponseMessage>('chat.response.stream'), // 接收消息（统一接口）
+  /**
+   * Pull events that this client missed while its WebSocket was disconnected.
+   * `sinceSeq` is the highest `_seq` the client has applied for the given
+   * conversation (0 for "give me everything currently buffered"). When the
+   * server's ring buffer no longer covers the gap (`gap: true`), the client
+   * should fall back to `database.getConversationMessages` for a full
+   * refetch and reset its seq tracker.
+   */
+  streamResync: bridge.buildProvider<
+    | { gap: false; events: Array<{ seq: number; name: string; data: unknown }> }
+    | { gap: true; oldestSeq: number; newestSeq: number },
+    { conversationId: string; sinceSeq: number }
+  >('conversation.stream-resync'),
   turnCompleted: bridge.buildEmitter<IConversationTurnCompletedEvent>('conversation.turn.completed'),
   listChanged: bridge.buildEmitter<IConversationListChangedEvent>('conversation.list-changed'),
   getWorkspace: bridge.buildProvider<

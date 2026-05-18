@@ -269,6 +269,20 @@ export function initConversationBridge(
     return conversationService.getConversationsByCronJob(cronJobId);
   });
 
+  // Phase 9.4: WS reconnect replay. Browser tracks the last `_seq` it saw
+  // per conversation; on reconnect it sends `streamResync({conversationId,
+  // sinceSeq})` for each open chat to pull events broadcast during the gap.
+  // Returns `{gap: true}` when the server's ring buffer no longer covers
+  // the requested range — client should then refetch the full message list
+  // from `database.getConversationMessages` and reset its seq tracker.
+  ipcBridge.conversation.streamResync.provider(async ({ conversationId, sinceSeq }) => {
+    if (!(await assertConversationOwner(conversationId))) {
+      return { gap: false, events: [] };
+    }
+    const { StreamReplayBuffer } = await import('@process/services/StreamReplayBuffer');
+    return StreamReplayBuffer.getSince(conversationId, sinceSeq);
+  });
+
   ipcBridge.conversation.createWithConversation.provider(
     async ({ conversation, sourceConversationId, migrateCron }) => {
       try {

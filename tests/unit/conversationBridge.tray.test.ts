@@ -96,6 +96,7 @@ vi.mock('@/common', () => ({
       responseStream: { emit: vi.fn() },
       listChanged: { emit: vi.fn() },
       listByCronJob: createCommand('conversation.listByCronJob'),
+      streamResync: createCommand('conversation.streamResync'),
       confirmation: {
         confirm: createCommand('conversation.confirmation.confirm'),
         list: createCommand('conversation.confirmation.list'),

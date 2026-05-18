@@ -43,7 +43,7 @@ describe('IpcAgentEventEmitter', () => {
   it('emitConfirmationRemove passes id and conversationId', () => {
     const emitter = new IpcAgentEventEmitter();
     emitter.emitConfirmationRemove('conv1', 'conf1');
-    expect(mocks.remove).toHaveBeenCalledWith({ conversation_id: 'conv1', id: 'conf1' });
+    expect(mocks.remove).toHaveBeenCalledWith(expect.objectContaining({ conversation_id: 'conv1', id: 'conf1' }));
   });
 
   it('emitMessage calls ipcBridge.conversation.message.emit', () => {

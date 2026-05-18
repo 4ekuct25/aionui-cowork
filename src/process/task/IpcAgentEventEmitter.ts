@@ -10,6 +10,12 @@ import { ipcBridge } from '@/common';
 import type { IAgentEventEmitter, AgentMessageEvent } from './IAgentEventEmitter';
 import type { IConfirmation } from '@/common/chat/chatLib';
 
+// Note: `_seq` stamping + StreamReplayBuffer recording happens at the WS
+// broadcaster edge (`src/process/webserver/adapter.ts`) rather than here,
+// because several agent managers (`AionrsManager`, `AcpAgentManager`,
+// `OpenClawAgentManager`, `TeamSession`) emit directly to `ipcBridge`
+// without going through this class.
+
 // Main-process hook for confirmation events (used by petConfirmManager).
 // buildEmitter.on() only works in renderer, so main-process subscribers use this hook.
 type ConfirmHook = {

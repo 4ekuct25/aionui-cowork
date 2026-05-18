@@ -52,8 +52,40 @@ if (win.electronAPI) {
   let reconnectTimer: number | null = null;
   let reconnectDelay = 500;
   let shouldReconnect = true; // Flag to control reconnection
+  // Tracks whether the next open is a re-establishment (vs the first ever
+  // connection). Set on every close, cleared once resync fires. Without
+  // this, a clean drop-and-immediate-reconnect skips resync because the
+  // exponential backoff never had time to grow past 500ms.
+  let hasConnectedBefore = false;
 
   const messageQueue: QueuedMessage[] = [];
+
+  // Phase 9.4: per-conversation high-water mark of stream events the
+  // renderer has applied. Used to ask the server for a delta after a WS
+  // reconnect (`conversation.stream-resync`).
+  const lastSeenSeq = new Map<string, number>();
+
+  /**
+   * After a reconnect, ask the server to replay anything we missed for
+   * each conversation we've been streaming. Fires fire-and-forget RPCs
+   * by issuing a synthetic invoke through the same emit channel the
+   * provider helper uses (`subscribe-<name>` + id correlation).
+   */
+  const requestStreamResync = () => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    for (const [conversationId, sinceSeq] of lastSeenSeq.entries()) {
+      const id = `stream-resync-${conversationId}-${Date.now()}`;
+      // Bridge subscribe envelope: { name, data: { id, data: payload } }.
+      // The server's bridge handler destructures `n.data` to get the
+      // payload, so we must wrap once even though it feels redundant.
+      socket.send(
+        JSON.stringify({
+          name: 'subscribe-conversation.stream-resync',
+          data: { id, data: { conversationId, sinceSeq } },
+        })
+      );
+    }
+  };
 
   // 1.发送队列中积压的消息，确保在重新建立连接后不会丢事件
   const flushQueue = () => {
@@ -102,8 +134,19 @@ if (win.electronAPI) {
     const currentSocket = socket;
 
     currentSocket.addEventListener('open', () => {
+      const isReconnect = hasConnectedBefore;
+      hasConnectedBefore = true;
       reconnectDelay = 500;
       flushQueue();
+      if (isReconnect) {
+        // Phase 9.4: after a reconnect, ask the server to replay any
+        // events we missed for each conversation we have a seq for. The
+        // server's StreamReplayBuffer holds the last ~1000 events per
+        // conversation; on gap (buffer doesn't cover sinceSeq) it
+        // returns `{gap:true}` and the renderer is expected to re-fetch
+        // from the DB.
+        requestStreamResync();
+      }
     });
 
     currentSocket.addEventListener('message', (event: MessageEvent) => {
@@ -116,6 +159,17 @@ if (win.electronAPI) {
           name: string;
           data: unknown;
         };
+
+        // Track the highest `_seq` we've applied per conversation so we
+        // can ask for a delta on reconnect. Server stamps these on every
+        // stream event that's worth replaying (see IpcAgentEventEmitter).
+        const data = payload.data as { conversation_id?: string; _seq?: number } | undefined;
+        if (data && typeof data === 'object' && typeof data._seq === 'number' && data.conversation_id) {
+          const prev = lastSeenSeq.get(data.conversation_id) ?? 0;
+          if (data._seq > prev) {
+            lastSeenSeq.set(data.conversation_id, data._seq);
+          }
+        }
 
         // 处理服务端心跳 ping，立即回复 pong 以保持连接
         // Handle server heartbeat ping - respond with pong immediately to keep connection alive
@@ -160,9 +214,33 @@ if (win.electronAPI) {
           return;
         }
 
+        // Intercept the resync response: server returns the buffered
+        // events as an array; re-emit each one through the local emitter
+        // so the renderer's existing stream handlers process them as if
+        // they had arrived live during the disconnect window.
+        if (payload.name.startsWith('subscribe.callback-conversation.stream-resync')) {
+          const resyncData = payload.data as
+            | { gap?: boolean; events?: Array<{ seq: number; name: string; data: { conversation_id?: string; _seq?: number } }> }
+            | undefined;
+          if (resyncData?.events?.length) {
+            for (const ev of resyncData.events) {
+              // Stamp _seq onto the replayed payload (defensive — server
+              // already stamps the live broadcast, but the buffer keeps
+              // raw payloads so we make sure the renderer sees the seq).
+              const replayPayload = { ...ev.data, _seq: ev.seq };
+              if (replayPayload.conversation_id) {
+                const prev = lastSeenSeq.get(replayPayload.conversation_id) ?? 0;
+                if (ev.seq > prev) lastSeenSeq.set(replayPayload.conversation_id, ev.seq);
+              }
+              emitterRef.emit(ev.name, replayPayload);
+            }
+          }
+          return;
+        }
+
         emitterRef.emit(payload.name, payload.data);
       } catch (error) {
-        // 忽略格式错误的消息 / Ignore malformed payloads
+        // 忽略формат-ошибки / Ignore malformed payloads
       }
     });
 

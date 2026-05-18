@@ -10,6 +10,7 @@ import { registerWebSocketBroadcaster, getBridgeEmitter } from '@/common/adapter
 import { WebSocketManager } from './websocket/WebSocketManager';
 import { getDatabase } from '@process/services/database/export';
 import { runWithCaller } from './callerContext';
+import { StreamReplayBuffer } from '@process/services/StreamReplayBuffer';
 
 // 存储取消注册函数，用于服务器停止时清理
 // Store unregister function for cleanup when server stops
@@ -47,9 +48,22 @@ export function initWebAdapter(wss: WebSocketServer): void {
   wsManagerInstance = wsManager;
   wsManager.initialize();
 
-  // 注册 WebSocket 广播函数到主适配器
-  // Register WebSocket broadcast function to main adapter
+  // Stamp every conversation-scoped broadcast with a monotonic `_seq` and
+  // record it in the per-conversation replay buffer. The renderer tracks
+  // the last `_seq` it saw and asks the server to replay missed events on
+  // WS reconnect (see `conversation.streamResync`). We do this at the WS
+  // edge (vs each emit site) because many agent managers emit directly
+  // without going through `IpcAgentEventEmitter`.
   unregisterBroadcaster = registerWebSocketBroadcaster((name, data) => {
+    const conversationId =
+      data && typeof data === 'object' ? (data as { conversation_id?: string }).conversation_id : undefined;
+    if (conversationId) {
+      const seq = StreamReplayBuffer.record(conversationId, name, data);
+      if (seq !== null) {
+        wsManager.broadcast(name, { ...(data as object), _seq: seq });
+        return;
+      }
+    }
     wsManager.broadcast(name, data);
   });
 

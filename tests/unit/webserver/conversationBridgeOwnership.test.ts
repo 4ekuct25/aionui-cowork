@@ -51,6 +51,7 @@ vi.mock('../../../src/common', () => ({
       },
       listChanged: { emit: vi.fn() },
       listByCronJob: makeChannel('listByCronJob'),
+      streamResync: makeChannel('streamResync'),
     },
     openclawConversation: {
       getRuntime: makeChannel('openclawConversation.getRuntime'),
