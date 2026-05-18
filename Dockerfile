@@ -43,6 +43,15 @@ RUN apt-get update \
 FROM oven/bun:latest AS runtime
 WORKDIR /app
 
+# curl/ca-certificates/bzip2 are needed to fetch and unpack the Goose
+# release tarball, plus bash for the few install scripts we run. The base
+# bun image is minimal and ships none of these.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         curl ca-certificates bash bzip2 xz-utils \
+         libgomp1 libdbus-1-3 libxcb1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy only build artifacts and production deps
 COPY --from=builder /app/dist-server ./dist-server
 COPY --from=builder /app/out/renderer ./out/renderer
@@ -57,7 +66,43 @@ RUN bun install --production --ignore-scripts
 # it for out-of-the-box parity with the upstream desktop experience.
 # Operators on a tight image budget can override with their own
 # Dockerfile derivation that drops this step.
-RUN npm install -g @openai/codex @anthropic-ai/claude-code 2>&1 | tail -5 || true
+#
+# IMPORTANT: this image is `oven/bun:latest` — there is no `npm` on PATH,
+# so we use `bun install -g`. BUN_INSTALL_BIN=/usr/local/bin in this base
+# image so binaries land directly on PATH. The `|| true` swallows
+# package-by-package failures so a single broken upstream registry entry
+# doesn't take out the whole image build.
+RUN bun install -g \
+      @anthropic-ai/claude-code \
+      @openai/codex \
+      @qwen-code/qwen-code \
+      @augmentcode/auggie \
+      opencode-ai \
+      2>&1 | tail -10 || true
+
+# Goose is a Rust binary distributed via GitHub releases, not npm.
+# We bypass the upstream install.sh (it has interactive prompts and
+# expects bash/tar/bzip2 in a specific configuration) and fetch the
+# tarball directly. The tarball contains a single `goose` executable.
+# Failure here is non-fatal — `|| true` keeps the image usable when the
+# release URL changes or the network is restricted.
+RUN set -eux; \
+    case "$(uname -m)" in \
+      x86_64) GOOSE_TARGET=x86_64-unknown-linux-gnu ;; \
+      aarch64|arm64) GOOSE_TARGET=aarch64-unknown-linux-gnu ;; \
+      *) echo "[goose] unsupported arch $(uname -m), skipping"; exit 0 ;; \
+    esac; \
+    curl -fsSL -o /tmp/goose.tar.bz2 \
+      "https://github.com/block/goose/releases/download/stable/goose-${GOOSE_TARGET}.tar.bz2" \
+    && tar -xjf /tmp/goose.tar.bz2 -C /usr/local/bin/ \
+    && rm /tmp/goose.tar.bz2 \
+    && chmod +x /usr/local/bin/goose \
+    && /usr/local/bin/goose --version \
+    || true
+
+# Hermes (Nous Research) is not yet installable via a stable package URL.
+# It is lazy-installed on first use by the agent runtime when present;
+# AcpDetector will simply not advertise it until the binary appears on PATH.
 
 # aionrs binary lives at the canonical path binaryResolver returns when
 # AIONUI_PLATFORM=docker. Same binary is also baked into the

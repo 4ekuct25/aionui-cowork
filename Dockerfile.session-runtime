@@ -105,7 +105,36 @@ COPY --from=builder --chown=aionui:aionui /app/dist-server /opt/aionui/dist-serv
 # control-plane image — AcpDetector advertises an agent only when the
 # binary is on PATH in BOTH places (control-plane for detection, runtime
 # for execution).
-RUN npm install -g @openai/codex @anthropic-ai/claude-code 2>&1 | tail -5 || true
+RUN npm install -g \
+      @anthropic-ai/claude-code \
+      @openai/codex \
+      @qwen-code/qwen-code \
+      @augmentcode/auggie \
+      opencode-ai \
+      2>&1 | tail -10 || true
+
+# Goose is a Rust binary distributed via GitHub releases, not npm. Direct
+# tarball fetch — bypasses the upstream install.sh's interactive prompts.
+RUN set -eux; \
+    case "$(uname -m)" in \
+      x86_64) GOOSE_TARGET=x86_64-unknown-linux-gnu ;; \
+      aarch64|arm64) GOOSE_TARGET=aarch64-unknown-linux-gnu ;; \
+      *) echo "[goose] unsupported arch $(uname -m), skipping"; exit 0 ;; \
+    esac; \
+    apt-get update \
+    && apt-get install -y --no-install-recommends bzip2 libgomp1 libdbus-1-3 libxcb1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o /tmp/goose.tar.bz2 \
+        "https://github.com/block/goose/releases/download/stable/goose-${GOOSE_TARGET}.tar.bz2" \
+    && tar -xjf /tmp/goose.tar.bz2 -C /usr/local/bin/ \
+    && rm /tmp/goose.tar.bz2 \
+    && chmod +x /usr/local/bin/goose \
+    && /usr/local/bin/goose --version \
+    || true
+
+# Hermes (Nous Research) is not yet installable via a stable package URL.
+# It is lazy-installed on first use by the agent runtime when present;
+# AcpDetector will simply not advertise it until the binary appears on PATH.
 
 USER aionui
 WORKDIR /workspace
