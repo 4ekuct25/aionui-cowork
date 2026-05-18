@@ -48,12 +48,19 @@ vi.mock('@arco-design/web-react', () => ({
     error: vi.fn(),
   },
   Tooltip: ({ children }: React.PropsWithChildren) => <>{children}</>,
+  // Phase 4C picker uses Arco Select inside ProjectPickerButton rendered by
+  // GuidActionRow. Stub it with a plain combobox so the row mounts.
+  Select: ({ value, placeholder }: { value?: string; placeholder?: string }) => (
+    <div role='combobox'>{value ?? placeholder ?? ''}</div>
+  ),
 }));
 
 vi.mock('@icon-park/react', () => ({
   ArrowUp: () => <span>ArrowUp</span>,
   Brain: () => <span>Brain</span>,
   FolderOpen: () => <span>FolderOpen</span>,
+  // Phase 4C ProjectPickerButton prefix icon.
+  FolderClose: () => <span>FolderClose</span>,
   Lightning: () => <span>Lightning</span>,
   Plus: () => <span>Plus</span>,
   Shield: () => <span>Shield</span>,

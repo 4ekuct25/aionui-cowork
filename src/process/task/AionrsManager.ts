@@ -788,8 +788,13 @@ export class AionrsManager extends BaseAgentManager<AionrsManagerData, string> {
     // Notify external services (e.g. cron scheduler) that the turn completed
     this.notifyTurnCompletion();
 
-    // Check for SKILL_SUGGEST.md updates (registered by cron executor)
-    skillSuggestWatcher.onFinish(this.conversation_id);
+    // Check for SKILL_SUGGEST.md updates (registered by cron executor).
+    // Skip when the turn was forcibly stopped — there's no completed content
+    // to analyze, and firing onFinish on stop() races with the user's intent
+    // to abandon the turn. AC-3 of the SkillSuggestWatcher test pins this.
+    if (!this.stopRequested) {
+      skillSuggestWatcher.onFinish(this.conversation_id);
+    }
 
     if (!content || !hasCronCommands(content)) {
       return;
