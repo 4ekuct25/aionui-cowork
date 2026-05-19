@@ -6,6 +6,7 @@
 
 import { GeminiAgent, GeminiApprovalStore } from '@process/agent/gemini';
 import type { TChatConversation } from '@/common/config/storage';
+import type { IDirOrFile } from '@/common/adapter/ipcBridge';
 import type { IAgentManager } from '@process/task/IAgentManager';
 import type { IConversationService, CreateConversationParams } from '@process/services/IConversationService';
 import type { IWorkerTaskManager } from '@process/task/IWorkerTaskManager';
@@ -499,8 +500,20 @@ export function initConversationBridge(
     };
   })();
 
-  ipcBridge.conversation.getWorkspace.provider(async ({ workspace, search, path }) => {
+  ipcBridge.conversation.getWorkspace.provider(async ({ workspace, search, path, conversation_id }) => {
     try {
+      // Chats attached to a project: walk inside the session container so the
+      // panel shows project files, not the stale legacy host-temp dir that
+      // `conversation.extra.workspace` still points at.
+      if (conversation_id && !search) {
+        try {
+          const { tryReadDirectoryRecursiveInContainer } = await import('@process/bridge/fsBridgeContainer');
+          const cr = await tryReadDirectoryRecursiveInContainer(conversation_id, workspace, path, 10);
+          if (cr.ok && cr.data) return [cr.data as IDirOrFile];
+        } catch {
+          // fall through to host walk
+        }
+      }
       const fileService = GeminiAgent.buildFileServer(workspace);
       return await readDirectoryRecursive(path, {
         root: workspace,
