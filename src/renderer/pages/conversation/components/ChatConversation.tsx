@@ -35,6 +35,7 @@ import { usePreviewContext } from '../Preview';
 import StarOfficeMonitorCard from '../platforms/openclaw/StarOfficeMonitorCard.tsx';
 import ConversationSkillsIndicator from './ConversationSkillsIndicator';
 import { ContainerStatusBadge } from './ChatLayout/ContainerStatusBadge';
+import { ChatProjectBadge } from './ChatLayout/ChatProjectBadge';
 import { ContainerShellButton } from './ChatLayout/ContainerShellButton';
 // import SkillRuleGenerator from './components/SkillRuleGenerator'; // Temporarily hidden
 
@@ -235,6 +236,7 @@ const AionrsConversationPanel: React.FC<{ conversation: AionrsConversation; slid
           cronJobId={conversation.extra?.cronJobId as string | undefined}
           hasCronSkill={hasLoadedSkill(conversation, 'cron')}
         />
+        <ChatProjectBadge conversationId={conversation.id} />
         <ContainerStatusBadge conversationId={conversation.id} />
         <ContainerShellButton conversationId={conversation.id} />
       </div>
@@ -439,6 +441,7 @@ const ChatConversation: React.FC<{
       )}
       {conversation && (
         <>
+          <ChatProjectBadge conversationId={conversation.id} />
           <ContainerStatusBadge conversationId={conversation.id} />
           <ContainerShellButton conversationId={conversation.id} />
         </>

@@ -36,5 +36,15 @@
     "noSandbox": "No sandbox (host)",
     "attachSuccess": "Attached to project",
     "attachFailed": "Failed to attach project (chat still works without sandbox)"
+  },
+  "badge": {
+    "unknown": "Project (unknown)",
+    "switch": "Switch project",
+    "switched": "Project switched",
+    "switchFailed": "Failed to switch project",
+    "detach": "Detach + destroy container",
+    "detached": "Detached from project",
+    "detachFailed": "Failed to detach project",
+    "refreshList": "Refresh project list"
   }
 }

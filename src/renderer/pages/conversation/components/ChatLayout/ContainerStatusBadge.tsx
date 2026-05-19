@@ -29,8 +29,8 @@ export function ContainerStatusBadge({ conversationId }: { conversationId?: stri
       try {
         const res = await fetch(`/api/sessions/${conversationId}`, { credentials: 'same-origin' });
         if (res.ok) {
-          const data = await res.json();
-          setStatus(data.status ?? null);
+          const data = (await res.json()) as { session?: { status?: string } };
+          setStatus(data.session?.status ?? null);
         } else if (res.status === 404) {
           setStatus(null);
         }
