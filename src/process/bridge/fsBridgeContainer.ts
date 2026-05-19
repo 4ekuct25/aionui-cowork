@@ -4,14 +4,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import Docker, { type Container, type Exec } from 'dockerode';
-import type { Readable, Writable } from 'stream';
-import { PassThrough } from 'stream';
+import Docker, { type Container } from 'dockerode';
 import { toContainerPath, CONTAINER_WORKSPACE } from '@process/runtime/pathMap';
 
 /**
- * Singleton dockerode handle for container fs operations. Honours DOCKER_HOST
- * so the control-plane can go through docker-socket-proxy.
+ * Singleton dockerode handle, kept for non-exec docker calls (e.g. fetching
+ * containers by id when we still need dockerode's helpers). Honours
+ * DOCKER_HOST so the control-plane can go through docker-socket-proxy.
+ *
+ * Note: container exec itself goes through `execViaFetch` below, NOT
+ * through dockerode. The reason is `tecnativa/docker-socket-proxy`
+ * doesn't fully tunnel the HTTP 101 Switching Protocols upgrade that
+ * dockerode's `exec.start({hijack:true})` path expects — the proxy
+ * replies 200 with the body as raw bytes, dockerode treats that as
+ * "unexpected" and throws (HTTP code 101). All output is lost, every
+ * try*InContainer helper silently returns ok:false, and fsBridge.ts
+ * falls back to the host filesystem. Symptoms: project-attached chats
+ * see the legacy temp dir in the workspace panel and read/write hits
+ * the host instead of the project volume.
  */
 function parseDockerHost(env: string | undefined): import('dockerode').DockerOptions | null {
   if (!env) return null;
@@ -72,78 +82,149 @@ async function resolveSession(conversationId: string): Promise<{ containerId: st
   return null;
 }
 
+// ============================================================================
+// execViaFetch — fetch-based docker exec that works through socket-proxy
+// ============================================================================
+
+type ExecResult = { stdout: Buffer; stderr: Buffer; exitCode: number };
+
 /**
- * Execute a command inside a container and capture stdout/stderr.
+ * Resolve `DOCKER_HOST` to an `http://host:port` base URL fetch can use.
+ * Returns `null` when DOCKER_HOST is unset (Electron / single-tenant dev),
+ * signalling the caller to fall back to dockerode-on-unix-socket which
+ * doesn't have the proxy 101 issue.
  */
-async function execInContainer(
+function dockerHttpBase(): string | null {
+  const env = process.env.DOCKER_HOST ?? '';
+  if (env.startsWith('tcp://')) return `http://${env.slice('tcp://'.length)}`;
+  if (env.startsWith('http://') || env.startsWith('https://')) return env;
+  return null;
+}
+
+/**
+ * Run a command inside a container via the docker REST API directly
+ * (bypassing dockerode's hijack path). Returns demuxed stdout / stderr
+ * buffers and the exit code. Use `tty: true` only when you don't care
+ * about separating stderr from stdout — the docker daemon then emits a
+ * single interleaved stream with no framing, and binary stdout will be
+ * mangled by the pty (CRLF translation). Default (tty: false) demuxes
+ * the Docker frame format and is binary-safe.
+ *
+ * Stdin is not supported. The two callers that need to push bytes into
+ * the container (`tryWriteFileInContainer`, `tryCopyFilesToWorkspaceInContainer`)
+ * encode the payload as a base64 argv parameter to a `node -e` script
+ * instead. That caps a single write at ~128 KB (ARG_MAX), matching
+ * what the previous implementation supported.
+ */
+async function execViaFetch(
   containerId: string,
-  command: string,
+  cmd: string,
   args: string[],
-  input?: string
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const d = getDocker();
-  const container: Container = d.getContainer(containerId);
+  opts: { tty?: boolean } = {}
+): Promise<ExecResult> {
+  const base = dockerHttpBase();
+  if (!base) return execViaDockerode(containerId, cmd, args, opts);
 
-  const exec = await container.exec({
-    Cmd: [command, ...args],
-    AttachStdin: !!input,
-    AttachStdout: true,
-    AttachStderr: true,
-    Tty: false,
+  const tty = !!opts.tty;
+  const createRes = await fetch(`${base}/containers/${containerId}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      Cmd: [cmd, ...args],
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: tty,
+    }),
   });
-
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  const stream = await exec.start({ hijack: true, stdin: input ? true : undefined });
-
-  if (input) {
-    (stream as unknown as Writable).write(input);
+  if (!createRes.ok) {
+    const body = await createRes.text().catch(() => '');
+    return {
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.from(`exec create failed: ${createRes.status} ${body}`),
+      exitCode: 1,
+    };
   }
+  const { Id: execId } = (await createRes.json()) as { Id: string };
 
-  d.modem.demuxStream(stream as unknown as NodeJS.ReadableStream, stdout, stderr);
+  const startRes = await fetch(`${base}/exec/${execId}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Connection: 'Upgrade', Upgrade: 'tcp' },
+    body: JSON.stringify({ Detach: false, Tty: tty }),
+  });
+  const body = Buffer.from(await startRes.arrayBuffer());
 
-  const [outChunks, errChunks] = await Promise.all([collectStream(stdout), collectStream(stderr)]);
+  const inspectRes = await fetch(`${base}/exec/${execId}/json`);
+  const info = inspectRes.ok ? ((await inspectRes.json()) as { ExitCode?: number }) : { ExitCode: undefined };
+  const exitCode = info.ExitCode ?? 0;
 
-  const info = await exec.inspect();
-  return {
-    stdout: Buffer.concat(outChunks).toString('utf-8'),
-    stderr: Buffer.concat(errChunks).toString('utf-8'),
-    exitCode: (info as unknown as { ExitCode?: number }).ExitCode ?? 0,
-  };
+  if (tty) return { stdout: body, stderr: Buffer.alloc(0), exitCode };
+  return { ...demuxDockerStream(body), exitCode };
 }
 
 /**
- * Execute a command inside a container and return raw stdout buffer (for binary data).
+ * Demux Docker's framed stream format. Each frame is an 8-byte header
+ * (stream type, 3 padding bytes, big-endian uint32 payload length) followed
+ * by `length` bytes of payload. Stream type: 1 = stdout, 2 = stderr.
  */
-async function execRawInContainer(containerId: string, command: string, args: string[]): Promise<Buffer> {
-  const d = getDocker();
-  const container: Container = d.getContainer(containerId);
-
-  const exec = await container.exec({
-    Cmd: [command, ...args],
-    AttachStdout: true,
-    AttachStderr: true,
-    Tty: false,
-  });
-
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  const stream = await exec.start({ hijack: true });
-
-  d.modem.demuxStream(stream as unknown as NodeJS.ReadableStream, stdout, stderr);
-
-  const [outChunks] = await Promise.all([collectStream(stdout), collectStream(stderr)]);
-
-  return Buffer.concat(outChunks);
+function demuxDockerStream(buf: Buffer): { stdout: Buffer; stderr: Buffer } {
+  const outChunks: Buffer[] = [];
+  const errChunks: Buffer[] = [];
+  let i = 0;
+  while (i + 8 <= buf.length) {
+    const streamType = buf[i];
+    const size = buf.readUInt32BE(i + 4);
+    const start = i + 8;
+    const end = start + size;
+    if (end > buf.length) break; // truncated frame — bail
+    const payload = buf.subarray(start, end);
+    if (streamType === 1) outChunks.push(payload);
+    else if (streamType === 2) errChunks.push(payload);
+    i = end;
+  }
+  return { stdout: Buffer.concat(outChunks), stderr: Buffer.concat(errChunks) };
 }
 
-async function collectStream(stream: Readable): Promise<Buffer[]> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-    stream.on('end', () => resolve(chunks));
-    stream.on('error', () => resolve(chunks));
+/**
+ * Fallback used when DOCKER_HOST is unset. Goes through dockerode (which
+ * means unix socket, not the socket-proxy) so the 101 bug doesn't bite.
+ */
+async function execViaDockerode(
+  containerId: string,
+  cmd: string,
+  args: string[],
+  opts: { tty?: boolean }
+): Promise<ExecResult> {
+  const d = getDocker();
+  const container: Container = d.getContainer(containerId);
+  const tty = !!opts.tty;
+  const exec = await container.exec({
+    Cmd: [cmd, ...args],
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: tty,
   });
+  const stream = (await exec.start({ hijack: true })) as unknown as NodeJS.ReadableStream;
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve, reject) => {
+    stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+    stream.on('end', () => resolve());
+    stream.on('error', (e: Error) => reject(e));
+  });
+  const body = Buffer.concat(chunks);
+  const info = await exec.inspect();
+  const exitCode = (info as unknown as { ExitCode?: number }).ExitCode ?? 0;
+  if (tty) return { stdout: body, stderr: Buffer.alloc(0), exitCode };
+  return { ...demuxDockerStream(body), exitCode };
+}
+
+/** Convenience wrapper for callers that only care about stdout-as-text. */
+async function execText(
+  containerId: string,
+  cmd: string,
+  args: string[]
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const r = await execViaFetch(containerId, cmd, args);
+  return { stdout: r.stdout.toString('utf-8'), stderr: r.stderr.toString('utf-8'), exitCode: r.exitCode };
 }
 
 // ============================================================================
@@ -164,15 +245,7 @@ export async function tryReadFileInContainer(
   if (!cp) return { ok: false };
 
   try {
-    const result = await execInContainer(session.containerId, 'node', [
-      '-e',
-      `
-      const fs = require('fs');
-      const data = fs.readFileSync(process.argv[1], 'utf-8');
-      process.stdout.write(data);
-    `,
-      cp,
-    ]);
+    const result = await execText(session.containerId, 'cat', [cp]);
     if (result.exitCode === 0) {
       return { ok: true, data: result.stdout };
     }
@@ -195,11 +268,10 @@ export async function tryReadFileBufferInContainer(
   if (!cp) return { ok: false };
 
   try {
-    const buf = await execRawInContainer(session.containerId, 'cat', [cp]);
-    if (buf.length > 0) {
-      const ab = new ArrayBuffer(buf.byteLength);
-      const view = new Uint8Array(ab);
-      view.set(buf);
+    const r = await execViaFetch(session.containerId, 'cat', [cp]);
+    if (r.exitCode === 0 && r.stdout.length > 0) {
+      const ab = new ArrayBuffer(r.stdout.byteLength);
+      new Uint8Array(ab).set(r.stdout);
       return { ok: true, data: ab };
     }
   } catch {
@@ -224,9 +296,9 @@ export async function tryWriteFileInContainer(
   try {
     // Ensure parent directory exists
     const parent = cp.substring(0, cp.lastIndexOf('/'));
-    await execInContainer(session.containerId, 'mkdir', ['-p', parent]);
+    await execText(session.containerId, 'mkdir', ['-p', parent]);
 
-    const result = await execInContainer(session.containerId, 'node', [
+    const result = await execText(session.containerId, 'node', [
       '-e',
       `
         const fs = require('fs');
@@ -262,7 +334,7 @@ export async function tryGetFileMetadataInContainer(
   if (!cp) return { ok: false };
 
   try {
-    const result = await execInContainer(session.containerId, 'node', [
+    const result = await execText(session.containerId, 'node', [
       '-e',
       `
       const fs = require('fs');
@@ -302,7 +374,7 @@ export async function tryRemoveEntryInContainer(
   if (!cp) return false;
 
   try {
-    const result = await execInContainer(session.containerId, 'rm', ['-rf', cp]);
+    const result = await execText(session.containerId, 'rm', ['-rf', cp]);
     return result.exitCode === 0;
   } catch {
     return false;
@@ -326,7 +398,7 @@ export async function tryRenameEntryInContainer(
   const newCp = `${dir}/${newName}`;
 
   try {
-    const result = await execInContainer(session.containerId, 'mv', [cp, newCp]);
+    const result = await execText(session.containerId, 'mv', [cp, newCp]);
     if (result.exitCode === 0) {
       return { ok: true, newPath: newCp };
     }
@@ -352,7 +424,7 @@ export async function tryGetFilesByDirInContainer(
   if (!cp) return { ok: false };
 
   try {
-    const result = await execInContainer(session.containerId, 'node', [
+    const result = await execText(session.containerId, 'node', [
       '-e',
       `
       const fs = require('fs');
@@ -415,8 +487,8 @@ export async function tryGetImageBase64InContainer(
   if (!cp) return { ok: false };
 
   try {
-    const buf = await execRawInContainer(session.containerId, 'cat', [cp]);
-    if (buf.length > 0) {
+    const r = await execViaFetch(session.containerId, 'cat', [cp]);
+    if (r.exitCode === 0 && r.stdout.length > 0) {
       const ext = pathExt(cp).toLowerCase();
       const mimeMap: Record<string, string> = {
         '.png': 'image/png',
@@ -428,7 +500,7 @@ export async function tryGetImageBase64InContainer(
         '.bmp': 'image/bmp',
       };
       const mime = mimeMap[ext] || 'image/png';
-      return { ok: true, data: `data:${mime};base64,${buf.toString('base64')}` };
+      return { ok: true, data: `data:${mime};base64,${r.stdout.toString('base64')}` };
     }
   } catch {
     // fall through
@@ -450,7 +522,6 @@ export async function tryCreateZipInContainer(
   if (!cp) return false;
 
   try {
-    // Use node to create zip in container
     const fileJson = JSON.stringify(
       files.map((f) => ({
         path: toContainerPath(f.path) || f.path,
@@ -458,16 +529,13 @@ export async function tryCreateZipInContainer(
       }))
     );
 
-    const result = await execInContainer(session.containerId, 'node', [
+    const result = await execText(session.containerId, 'node', [
       '-e',
       `
         const fs = require('fs');
         const path = require('path');
         const zipPath = process.argv[1];
         const files = JSON.parse(process.argv[2]);
-        // Simple zip using JSZip-like approach or just tar
-        const zlib = require('zlib');
-        // Create a simple zip
         const entries = [];
         for (const f of files) {
           if (f.content !== undefined) {
@@ -478,20 +546,16 @@ export async function tryCreateZipInContainer(
             } catch {}
           }
         }
-        // Use a simple approach: write files then zip
         const tmpDir = '/tmp/zip_' + Date.now();
         fs.mkdirSync(tmpDir, { recursive: true });
         for (const e of entries) {
           const p = path.join(tmpDir, path.basename(e.path));
           fs.writeFileSync(p, e.content);
         }
-        // Simple zip: use zlib to create a basic archive
-        // Actually let's just use tar if available, or fall back
         const { execSync } = require('child_process');
         try {
           execSync(\`tar -czf "\${zipPath}" -C "\${tmpDir}" .\`, { stdio: 'pipe' });
         } catch {
-          // If tar fails, try creating a simple zip
           throw new Error('Compression failed');
         }
         fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -511,7 +575,11 @@ function pathExt(p: string): string {
 }
 
 /**
- * Try to copy files into the container workspace.
+ * Try to copy host files into the container workspace. Reads each host
+ * file via Node's fs (we're already on the control-plane), then pushes
+ * the bytes into the container as a base64 argv parameter to a `node -e`
+ * writer. Per-file argv cap is ~128 KB; larger files silently fail and
+ * fsBridge falls back to the host copy path.
  */
 export async function tryCopyFilesToWorkspaceInContainer(
   conversationId: string | undefined,
@@ -520,31 +588,30 @@ export async function tryCopyFilesToWorkspaceInContainer(
 ): Promise<boolean> {
   const session = await resolveSessionForPath(conversationId, workspace);
   if (!session) return false;
-  if (!session) return false;
 
-  // In docker mode, workspace should be /workspace
   const destWorkspace = toContainerPath(workspace) || CONTAINER_WORKSPACE;
+  const fs = await import('node:fs/promises');
 
   try {
-    const d = getDocker();
-    const container = d.getContainer(session.containerId);
-
     for (const fp of filePaths) {
       const basename = fp.substring(fp.lastIndexOf('/') + 1) || fp.substring(fp.lastIndexOf('\\') + 1);
       const destPath = `${destWorkspace}/${basename}`;
-
-      // Read file from host, write into container
-      const { execSync } = await import('child_process');
-      const content = execSync(`cat "${fp}"`, { encoding: 'utf-8' });
-      await execInContainer(session.containerId, 'node', [
+      let content: Buffer;
+      try {
+        content = await fs.readFile(fp);
+      } catch {
+        return false;
+      }
+      const r = await execText(session.containerId, 'node', [
         '-e',
         `
           const fs = require('fs');
           fs.writeFileSync(process.argv[1], Buffer.from(process.argv[2], 'base64'));
         `,
         destPath,
-        Buffer.from(content).toString('base64'),
+        content.toString('base64'),
       ]);
+      if (r.exitCode !== 0) return false;
     }
     return true;
   } catch {
@@ -564,7 +631,7 @@ export async function tryListWorkspaceFilesInContainer(
   const cp = toContainerPath(rootPath) || CONTAINER_WORKSPACE;
 
   try {
-    const result = await execInContainer(session.containerId, 'node', [
+    const result = await execText(session.containerId, 'node', [
       '-e',
       `
       const fs = require('fs');
@@ -698,7 +765,7 @@ export async function tryReadDirectoryRecursiveInContainer(
   `;
 
   try {
-    const result = await execInContainerTty(session.containerId, 'node', [
+    const result = await execText(session.containerId, 'node', [
       '-e',
       script,
       containerRoot,
@@ -716,91 +783,4 @@ export async function tryReadDirectoryRecursiveInContainer(
     // fall through to host walk
   }
   return { ok: false };
-}
-
-/**
- * TTY-mode exec via raw fetch to the docker proxy. We bypass dockerode's
- * hijack/upgrade path because tecnativa/docker-socket-proxy doesn't
- * fully tunnel the HTTP 101 Switching Protocols dockerode expects — it
- * answers 200 with the body as raw bytes instead. Dockerode treats 200
- * as "unexpected" and throws even though the body is the actual command
- * output. So we issue the two HTTP calls (create + start) ourselves and
- * read the body straight off the response.
- *
- * Trade-off: stdout+stderr come back interleaved (Tty: true → no
- * demux frame headers). Only suitable for command output we control
- * where stderr is empty on success.
- */
-async function execInContainerTty(
-  containerId: string,
-  command: string,
-  args: string[]
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const dockerHostEnv = process.env.DOCKER_HOST ?? '';
-  // tcp://host:port → http://host:port — fetch needs an http(s) scheme.
-  const httpBase = dockerHostEnv.startsWith('tcp://')
-    ? `http://${dockerHostEnv.slice('tcp://'.length)}`
-    : dockerHostEnv;
-  if (!httpBase) {
-    // No proxy — fall back to dockerode (path used in tests / local dev
-    // where DOCKER_HOST is unset and dockerode talks to the socket
-    // directly without proxy-induced 101 quirks).
-    return execInContainerTtyViaDockerode(containerId, command, args);
-  }
-
-  const createRes = await fetch(`${httpBase}/containers/${containerId}/exec`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      Cmd: [command, ...args],
-      AttachStdout: true,
-      AttachStderr: true,
-      Tty: true,
-    }),
-  });
-  if (!createRes.ok) {
-    return { stdout: '', stderr: `exec create failed: ${createRes.status}`, exitCode: 1 };
-  }
-  const { Id: execId } = (await createRes.json()) as { Id: string };
-
-  const startRes = await fetch(`${httpBase}/exec/${execId}/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Connection: 'Upgrade', Upgrade: 'tcp' },
-    body: JSON.stringify({ Detach: false, Tty: true }),
-  });
-  const stdout = await startRes.text();
-
-  const inspectRes = await fetch(`${httpBase}/exec/${execId}/json`);
-  const info = inspectRes.ok
-    ? ((await inspectRes.json()) as { ExitCode?: number })
-    : { ExitCode: undefined };
-  return { stdout, stderr: '', exitCode: info.ExitCode ?? 0 };
-}
-
-async function execInContainerTtyViaDockerode(
-  containerId: string,
-  command: string,
-  args: string[]
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const d = getDocker();
-  const container: Container = d.getContainer(containerId);
-  const exec = await container.exec({
-    Cmd: [command, ...args],
-    AttachStdout: true,
-    AttachStderr: true,
-    Tty: true,
-  });
-  const stream = (await exec.start({ hijack: true })) as unknown as NodeJS.ReadableStream;
-  const chunks: Buffer[] = [];
-  await new Promise<void>((resolve, reject) => {
-    stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-    stream.on('end', () => resolve());
-    stream.on('error', (e: Error) => reject(e));
-  });
-  const info = await exec.inspect();
-  return {
-    stdout: Buffer.concat(chunks).toString('utf-8'),
-    stderr: '',
-    exitCode: (info as unknown as { ExitCode?: number }).ExitCode ?? 0,
-  };
 }
