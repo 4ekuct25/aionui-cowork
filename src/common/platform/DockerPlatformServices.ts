@@ -275,12 +275,14 @@ export class DockerPlatformServices implements IPlatformServices {
       const env = { ...opts.env };
       const containerId = env[ENV_CONTAINER_ID];
       if (!containerId) {
-        // Auto-fork pathways (e.g. ForkTask.init() running in a constructor)
-        // can't resolve a session container synchronously. Fall back to the
-        // host-side child_process.fork so the worker still launches, and let
-        // an explicit caller upgrade it later when it has a container id
-        // (Phase 4B.2 will route Gemini workers through this branch once an
-        // async lookup hook is wired into ForkTask).
+        // Auto-fork pathways (e.g. ForkTask.init() running synchronously
+        // from a constructor with `enableFork=true`) can't resolve a
+        // session container before they hit this method, so they fall
+        // back to host-side child_process.fork. Callers that DO want
+        // container isolation (Phase 4B.2 — Gemini) construct with
+        // `enableFork=false`, then resolve the container in an async
+        // bootstrap (`GeminiAgentManager.createBootstrap`) and call
+        // `init(env)` once `env[AIONUI_CONTAINER_ID]` is populated.
         return this.node.worker.fork(modulePath, args, opts);
       }
 
